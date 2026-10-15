@@ -14,9 +14,19 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# SKSE 插件必须使用静态 CRT（CommonLibSSE 本身就是 /MT 构建的，
-# 用 /MD 会得到 LNK2038 RuntimeLibrary mismatch）。这一行不要改。
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+# MSVC 运行时库必须与 vcpkg 编出来的 CommonLibSSE-NG 完全一致，
+# 否则链接期会报一大片 LNK2038 RuntimeLibrary mismatch + LNK2005 重复定义。
+# 规则（严格由 VCPKG_TARGET_TRIPLET 推导，不要再手写死）：
+#   x64-windows              -> CommonLibSSE 是 /MD  -> 我们也要 /MD
+#   x64-windows-static       -> CommonLibSSE 是 /MT  -> 我们也要 /MT
+#   x64-windows-static-md    -> 静态库 + /MD        -> 还是 /MD
+if(VCPKG_TARGET_TRIPLET MATCHES "static" AND NOT VCPKG_TARGET_TRIPLET MATCHES "static-md")
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    message(STATUS "EEA: 三元组 ${VCPKG_TARGET_TRIPLET} -> 静态 CRT (/MT)")
+else()
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL$<$<CONFIG:Debug>:DebugDLL>")
+    message(STATUS "EEA: 三元组 '${VCPKG_TARGET_TRIPLET}' -> 动态 CRT (/MD)")
+endif()
 
 # CommonLibSSE-NG (SE) —— 由 vcpkg 端口 commonlibsse-ng-se 提供
 find_package(CommonLibSSE CONFIG REQUIRED)

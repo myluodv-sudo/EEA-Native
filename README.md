@@ -5,6 +5,10 @@ Papyrus 逻辑整体换成 SKSE 原生插件。配置项与原版 MCM 一一对�
 
 - 目标运行时：**Skyrim SE 1.5.97**（SKSE 2.0.20）
 - 依赖：SKSE + Address Library（你已装）
+- 依赖：**Microsoft Visual C++ 2015–2022 x64 运行库**（MSVCP140.dll）。
+  DLL 按 vcpkg 默认三元组 `x64-windows` 编译，用**动态 CRT（/MD）** —— 因为
+  vcpkg 编出来的 CommonLibSSE-NG 就是 /MD，两者必须一致，否则链接期 LNK2038。
+  绝大多数 Skyrim 整合包装机时已经带上；若游戏报 DLL 加载失败，装一次运行库即可。
 - 可选：SKSE Menu Framework（你整合包里已有，缺失时菜单自动隐藏，功能不受影响）
 
 ---
@@ -88,7 +92,7 @@ EEA_Native.log        ← 运行后自动生成，排查问题就看它
 
 ```
 native/
-├─ CMakeLists.txt              构建脚本（静态 CRT，SKSE 插件必须）
+├─ CMakeLists.txt              构建脚本（MSVC 运行时库按 VCPKG_TARGET_TRIPLET 自动对齐）
 ├─ CMakePresets.json
 ├─ vcpkg.json                  依赖：commonlibsse-ng-se
 ├─ vcpkg-configuration.json    指向 Color-Glass 注册表（CommonLibSSE-NG 不在官方 vcpkg 里）

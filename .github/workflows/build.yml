@@ -6,12 +6,16 @@ on:
   pull_request:
   workflow_dispatch:
 
-env:
-  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
-
+# vcpkg 二进制缓存：用 files 后端 + actions/cache（路径见 job 级 env）。
+# 旧的 "x-gha" 后端依赖 ACTIONS_CACHE_URL / ACTIONS_RUNTIME_TOKEN，
+# 这两个变量 GitHub 已经不再注入到 workflow 的 env 里，所以每次都冷编译
+# （CommonLibSSE-NG 从源码编一次要 10 分钟以上）。
 jobs:
   build-windows:
     runs-on: windows-latest
+
+    env:
+      VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
 
     steps:
       - name: 检出代码
@@ -39,12 +43,14 @@ jobs:
           Write-Host "===== 诊断时的 VCPKG_ROOT ====="
           Write-Host "VCPKG_ROOT = $env:VCPKG_ROOT"
 
-      - name: 暴露 GitHub Actions 缓存变量（给 vcpkg 二进制缓存用）
-        uses: actions/github-script@v7
+      - name: 缓存 vcpkg 二进制包（命中后配置阶段从 ~10 分钟降到 1 分钟内）
+        uses: actions/cache@v4
         with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+          path: ${{ github.workspace }}/vcpkg-bincache
+          # 三元组与 vcpkg 清单变了就重新开一份缓存，避免读到不匹配的二进制
+          key: vcpkg-bincache-${{ runner.os }}-x64-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-bincache-${{ runner.os }}-x64-windows-
 
       # ⚠ 顺序很关键，不要和下面的「安装 vcpkg」调换。
       # msvc-dev-cmd 内部会调 vcvarsall，而 VS 2026 的 vcvarsall 会把 VCPKG_ROOT
