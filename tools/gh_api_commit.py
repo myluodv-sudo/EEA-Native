@@ -6,13 +6,14 @@
 
 用法：
     cd native
-    GH_TOKEN=xxxx python tools/gh_api_commit.py <<'MSG'
+    GH_TOKEN=xxxx python tools/gh_api_commit.py $(git diff --name-only HEAD~1 HEAD) <<'MSG'
     提交信息第一行
 
     正文...
     MSG
 
-注意：token 从环境变量读取，不写入任何文件。
+  · 文件列表从命令行参数给（排在最前），不传则退回下面的默认清单。
+  · token 从环境变量读取，不写入任何文件。
 """
 from __future__ import annotations
 
@@ -26,8 +27,8 @@ TOKEN = os.environ["GH_TOKEN"]
 REPO = "myluodv-sudo/EEA-Native"
 API = "https://api.github.com"
 
-# 需要提交的文件（相对当前目录）
-FILES = [
+# 需要提交的文件（相对当前目录）；命令行参数优先
+FILES = sys.argv[1:] or [
     "CMakePresets.json",
     ".github/workflows/build.yml",
 ]

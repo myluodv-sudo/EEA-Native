@@ -38,7 +38,9 @@ namespace
 			RE::BSTEventSource<RE::TESObjectLoadedEvent>*) override
 		{
 			if (a_event && a_event->loaded) {
-				EEA::Manager::Get().OnObjectLoaded(a_event->objectFormID);
+				// 字段名是 formID（CommonLibSSE-NG 的 TESObjectLoadedEvent 定义），
+				// 不是 objectFormID。
+				EEA::Manager::Get().OnObjectLoaded(a_event->formID);
 			}
 			return RE::BSEventNotifyControl::kContinue;
 		}
@@ -59,7 +61,10 @@ namespace
 			if (!a_event || !a_event->actor) {
 				return RE::BSEventNotifyControl::kContinue;
 			}
-			if (a_event->newState.get() != static_cast<std::uint32_t>(RE::ACTOR_COMBAT_STATE::kCombat)) {
+			// newState 是 stl::enumeration<ACTOR_COMBAT_STATE, uint32_t>，
+			// .get() 取出的就是枚举本身，所以直接和枚举常量比 —— 不要转成 uint32_t 比，
+			// 那个方向 scoped enum 不隐式转换，编译不过。
+			if (a_event->newState.get() != RE::ACTOR_COMBAT_STATE::kCombat) {
 				return RE::BSEventNotifyControl::kContinue;
 			}
 			if (auto* actor = a_event->actor->As<RE::Actor>()) {
@@ -116,6 +121,16 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 
 	// 配置优先：缺失时自动生成一份带注释的模板
 	EEA::Config::Get().LoadFromDisk();
+
+	// 引擎接口提示：CommonLibSSE-NG 3.7.0 只暴露了两个 AV 写接口 ——
+	//   ModActorValue(ActorValue, float)                          改「永久修正」
+	//   RestoreActorValue(ACTOR_VALUE_MODIFIER, ActorValue, float) 改指定桶
+	// 没有「带桶的 ModActorValue」，所以上限增量只能走永久修正。
+	// 这一项留着是为了 INI 兼容，打开也只是打条日志。
+	if (EEA::Config::Get().Data().useTemporaryModifier) {
+		logger::warn("[EEA] bUseTemporaryModifier=1 本次不生效：本版本引擎接口未暴露"
+					 "「带桶的 ModActorValue」，属性上限一律走永久修正（kPermanent）。");
+	}
 
 	// 菜单（框架不在时自动跳过，功能不受影响）
 	EEA::Menu::Register();

@@ -205,13 +205,24 @@ if (vital && s.preserveCurrentRatio && maxBefore > kEps) {
 ### Step 3 —— 按净差写入，并读回引擎实际接受量
 
 ```cpp
-const auto bucket = s.useTemporaryModifier ? RE::ACTOR_VALUE_MODIFIER::kTemporary
-                                           : RE::ACTOR_VALUE_MODIFIER::kPermanent;
-a_actor->ModActorValue(bucket, a_av, net);
+a_actor->ModActorValue(a_av, net);
 
 const float maxAfter = a_actor->GetPermanentActorValue(a_av);
 const float actual   = maxAfter - maxBefore;     // 引擎实际接受量
 ```
+
+**为什么是 2 参数的 `ModActorValue`**（这一条是查过引擎接口后才定下来的，不是随手写的）：
+
+CommonLibSSE-NG 3.7.0 的 `ActorValueOwner` 只暴露两个 AV **写**接口 ——
+
+| 接口 | 作用 |
+|---|---|
+| `ModActorValue(ActorValue, float)` | 改**永久修正**（= Papyrus 的 `ModAV`，"permanently alters the actor value"） |
+| `RestoreActorValue(ACTOR_VALUE_MODIFIER, ActorValue, float)` | 改**指定桶**（`kPermanent` / `kTemporary` / `kDamage`） |
+
+**没有**「带桶的 `ModActorValue`」这种三参数形式。所以属性上限只能写在永久修正上，
+`bUseTemporaryModifier` 这一项在当前版本上无法生效（保留键仅为 INI 兼容，打开会打一条日志）。
+好在 2 参数的 `ModActorValue` 恰好就是原作者 Papyrus 脚本用的那个 `modav`，行为对齐。
 
 两个要点：
 
@@ -225,15 +236,30 @@ const float actual   = maxAfter - maxBefore;     // 引擎实际接受量
 ### Step 4 —— 把当前值按原比例放回去
 
 ```cpp
-if (vital && s.preserveCurrentRatio) {
+if (vital && s.preserveCurrentRatio && maxAfter > kEps) {
     const float desired = maxAfter * ratio;
-    const float diff    = desired - a_actor->GetActorValue(a_av);
-    if (diff >  kEps) a_actor->RestoreActorValue(a_av, diff);
-    if (diff < -kEps) a_actor->DamageActorValue(a_av, -diff);
+    const float cur0    = a_actor->GetActorValue(a_av);
+    const float diff    = desired - cur0;
+    if (std::abs(diff) > kEps) {
+        // kTemporary 桶：只影响当前值，不改 GetPermanentActorValue，
+        // 也不像 kDamage 桶在 0 处夹取，正反两个方向都能走
+        a_actor->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, a_av, diff);
+
+        // 回读校验：若引擎的参数方向与预期相反（回读离目标更远），补一次反向偏移。
+        // 这样不依赖对参数符号的猜测 —— 引擎自己会给出答案。
+        const float cur1 = a_actor->GetActorValue(a_av);
+        if (std::abs(desired - cur1) > std::abs(diff) + kEps) {
+            a_actor->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, a_av, -2.0F * diff);
+        }
+    }
 }
 ```
 
 **这一步就是「回血 BUG」被根治的地方**，展开见下一节。
+
+> 残留问题说明：这一步会在 `kTemporary` 桶留下偏移量。回滚时 `RevertWith` 会再走一遍
+> `SetAVTotal`（目标值 0），`ratio` 是**当次重新计算**的，所以这份偏移会被自然吸收掉，
+> 不需要额外存字段。
 
 ---
 
@@ -311,35 +337,43 @@ struct Applied {
 
 ```cpp
 if (auto it = pendingRevert_.find(fid); it != pendingRevert_.end()) {
-    if (!s.useTemporaryModifier) {
-        applied_[fid] = it->second;      // kPermanent：认领，数值不动
-    } else {
-        RevertWith(a_actor, it->second); // kTemporary：不存盘，只能老实撤掉重算
-    }
+    applied_[fid] = it->second;      // 认领：数值不动
     pendingRevert_.erase(it);
 }
 ```
 
 为什么必须这样：
 
-- 默认用 `kPermanent` 桶，数值**已经写在角色身上、随存档保存了**。
+- 属性上限写在 `kPermanent` 桶（= 原版 Papyrus 的 `ModAV`），数值**已经写在角色身上、随存档保存了**。
 - 如果读档时直接撤销，会把**已经被打到残血**的单位再扣一次 → 直接暴毙。
 - 这正是原版「残血敌人读档后被拉满」的**镜像问题** —— 两边都得避开。
+
+> 早期设计里这里还有一个 `bUseTemporaryModifier` 分支（临时桶不存盘 → 只能撤掉重算）。
+> 该选项在当前引擎接口下已失效（见 Step 3 的说明），所以这个分支也一并去掉了。
 
 ### 6.4 `pendingRevert_` 为什么要延迟
 
 `SerializeLoad` 执行时目标 actor 可能还没加载（`LookupByID` 拿不到）。
 所以读回的记录先存进 `pendingRevert_`，等那个单位进队列时（`ApplyTo` 开头）再处理。
 
-### 6.5 两种 modifier 桶的取舍
+### 6.5 modifier 桶：为什么只有一个
 
-| | `kPermanent`（默认） | `kTemporary` |
-|---|---|---|
-| 与原版 `ModAV` | 同一个桶 | 不同桶 |
-| 随存档保存 | 是 | 否 |
-| 读档后 | 可以"认领" | 只能撤掉重算 |
-| 卸载插件前 | **请先在菜单点「还原所有单位」** | 直接删即可 |
-| 是否抬高上限 | 是（已验证） | 未实机验证 |
+引擎里有三个桶（`ACTOR_VALUE_MODIFIERS`：`kPermanent=0` / `kTemporary=1` / `kDamage=2`），
+但**上限只能写在 `kPermanent` 上**：
+
+| | `kPermanent` | `kTemporary` | `kDamage` |
+|---|---|---|---|
+| 用什么接口写 | `ModActorValue(av, x)` | `RestoreActorValue(kTemporary, av, x)` | `RestoreActorValue(kDamage, av, x)` |
+| 与原版 `ModAV` | 同一个桶 | 不同桶 | 不同桶 |
+| 是否反映在 `GetPermanentActorValue` | **是** | 否 | 否 |
+| 本插件用途 | **属性上限增量** | 只用来把当前值拉回目标比例 | 未使用 |
+
+`kTemporary` 桶在本插件里只承担一件事 —— **保持当前血量百分比**（Step 4）。
+它不参与上限计算，所以「回读 `GetPermanentActorValue` 测实际接受量」这条自校验链是干净的。
+
+- 随存档保存：`kPermanent` 是，`kTemporary` 否 —— 但 `kTemporary` 只影响当前值，
+  回滚时会被重新计算的比例自然吸收（见 Step 4 的残留说明）。
+- 卸载插件前：**请先在菜单点「还原所有单位」**（上限增量随存档保存）。
 
 ---
 
@@ -637,22 +671,47 @@ if (wantScale) {
         entry.scaleSaved = true;
     }
     const float target = entry.origScale + s.bossScale;
-    if (std::abs(a_actor->GetScale() - target) > 0.005F) {   // 幂等
-        a_actor->SetScale(target);
+    if (std::abs(entry.curScale - target) > 0.005F) {   // 幂等：与自己上次写进去的值比
+        SetActorScale(a_actor, target);
+        entry.curScale = target;
     }
 } else if (entry.scaleSaved) {
-    a_actor->SetScale(entry.origScale);           // 还原用原始值，不是 SetScale(1.0)
+    SetActorScale(a_actor, entry.origScale);      // 还原用原始值，不是 SetScale(1.0)
     entry.scaleSaved = false;
 }
 ```
 
-三个修复点：
+四个修复点：
 
 1. `origScale` 记在 `Applied` 里，**随 co-save 持久化** —— 读档不会再丢
 2. `scaleSaved` 标志保证**只在第一次**记录原始体型
-3. **幂等**：体型没变就不调 `SetScale` —— 原版每次刷新都调，这是掉帧主因之一
-4. 还原用 `SetScale(origScale)`，不是原版的 `SetScale(1.0)`
+3. **幂等**：与自己上次写进去的 `entry.curScale` 比，而不是与引擎回读比 ——
+   写入口径与回读口径未必一致，用回读判断会次次都写（原版掉帧主因之一）
+4. 还原用 `SetActorScale(origScale)`，不是原版的 `SetScale(1.0)`
    （原版那种写法会把本来就是 1.2 倍体型的单位强行压回 1.0）
+
+### 写入侧：为什么是 `SetActorScale` 而不是 `SetScale`
+
+**CommonLibSSE-NG 3.7.0 只给 `TESObjectREFR` 暴露了 `GetScale()`，没有 `SetScale`。**
+`Actor` 上唯一带 float 参数的 `SetSize()` 语义无法确证（可能是别的属性），所以不走虚函数，
+改为直接写体型真正存放的两处：
+
+```cpp
+inline void SetActorScale(RE::Actor* a_actor, float a_scale)
+{
+    const float s = std::clamp(a_scale, 0.05F, 10.0F);   // 与 setscale 的取值范围对齐
+
+    // ① 引用运行时数据：单位是「缩放 × 100」，uint16 存 0.1~10 的小数位刚好够，
+    //    这一份参与存档 / 重载
+    a_actor->GetReferenceRuntimeData().refScale = static_cast<std::uint16_t>(s * 100.0F);
+    a_actor->AddChange(RE::TESObjectREFR::ChangeFlags::kScale);   // 告诉引擎这个引用变了
+
+    // ② 当前 3D 节点：立刻生效的那一份
+    if (auto* obj3D = a_actor->GetCurrent3D()) {
+        obj3D->local.scale = s;
+    }
+}
+```
 
 `bSkipBossScaleOnDragons=1`：龙跳过体型加成 —— 因为**龙的速度会被体型放大**，
 这也会顺带避免「龙速度暴走」这个已知问题。
@@ -771,10 +830,17 @@ INI 在游戏外手改也可以，键名与原版 MCM 的 `settings.ini` 完全�
 
 **代码层面尚未验证的：**
 
-- **还没编译过** —— 本机无 MSVC，走 GitHub Actions 云端编译（`.github/workflows/build.yml`）
+- **本机无 MSVC**，走 GitHub Actions 云端编译（`.github/workflows/build.yml`）。
+  首次云端编译已把「构建环境」问题全部清掉（VS 版本写死、`VCPKG_ROOT` 被 `vcvarsall`
+  改写），API 签名错误也已按 CommonLibSSE-NG 3.7.0 的真实头文件逐条修正
 - `TESForm::GetFormEditorID()` 在本机运行时是否真有值 → 决定 Boss 判定 [2] 能否工作
   （启动日志里会明确写出来）
-- `kTemporary` 桶是否真能抬高 AV 上限 → 未实机验证，所以默认用 `kPermanent`
+- **体型写入的口径**：`SetActorScale` 直接写 `REFERENCE_RUNTIME_DATA::refScale`（缩放 × 100）
+  与 3D 的 `local.scale`；`GetScale()` 走的是引擎函数而不是这个字段，
+  两者口径是否完全一致要在游戏里确认一次
+- **`RestoreActorValue` 的参数方向**：Step 4 写了回读校验，
+  方向若与预期相反会自动补一次反向偏移，且 `bVerboseLog=1` 时会把
+  「调整前 / 调整后 / 目标」打进日志，便于一眼核对
 
 **设计层面的边界：**
 
@@ -785,6 +851,8 @@ INI 在游戏外手改也可以，键名与原版 MCM 的 `settings.ini` 完全�
   跨一次区域切换或重读存档后绝大多数单位就是新值了
 - 「不含友军」版所需的 `IsHostileToActor` / `GetShouldHelp` 是引用级判据，
   无法在定义层表达（本项目不受影响，因为「含友军」版没有这两条）
+- `bUseTemporaryModifier` 在当前引擎接口下无效（引擎未暴露带桶的 `ModActorValue`），
+  保留键名仅为 INI 兼容
 
 ---
 

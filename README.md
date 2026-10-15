@@ -226,7 +226,7 @@ Boss 判定②（记录名 EditorID）是否可用、法术强度实现方式。
 |---|---|
 | `sMode` | 法术强度实现方式（Perk / PowerMod / Both），牵涉"要不要保留 ESP"，属装前决策 |
 | `iTriggerMode=2` | 菜单只给最常用的两档（0 加载 / 1 仅战斗） |
-| `bUseTemporaryModifier` | 属性写在哪个 modifier 桶，尚未实机验证，不建议随手改 |
+| `bUseTemporaryModifier` | **已失效**：引擎未暴露带桶的 `ModActorValue`，属性上限恒走永久修正。保留键名仅为 INI 兼容 |
 | `iBossMinAggression` / `iBossMinConfidence` | Boss 判定③的阈值（该判据默认关闭） |
 | `sLocRefTypeBoss` / `sBossEdidPatterns` | Boss 判定的匹配文字 |
 | `sBossKeywords` / `sBossRaces` / `sBossNpcs` | Boss 显式名单兜底 |
@@ -262,7 +262,7 @@ Boss 判定②（记录名 EditorID）是否可用、法术强度实现方式。
 | Perf | `iProcessPerTick` | 每帧处理单位数 | 6 |
 | Perf | `iTriggerMode` | `0`=加载即强化 / `1`=仅战斗触发 / `2`=两者 | 0 |
 | Perf | `bPreserveCurrentRatio` | 改上限时保持当前血量百分比（不回血） | 1 |
-| Perf | `bUseTemporaryModifier` | `0`=`kPermanent`（推荐）/ `1`=`kTemporary` | 0 |
+| Perf | `bUseTemporaryModifier` | **已失效**，恒为 `kPermanent`（见下方「存档残留」说明） | 0 |
 
 > `iTriggerMode=1` 与 `bPreserveCurrentRatio=1` 是最值得动的两个开关：
 > 前者让你可以放心把 `minLevel` 设成 1，后者决定「改设置时血量会不会跳」。
@@ -386,11 +386,13 @@ Boss 设定就等于不存在。
    只有拔刀开打（或被打）的单位才会出现。确认后就可以把 `minLevel` 改成 1。
 
 另外这几处 API 按 CommonLibSSE-NG `ng` 分支的头文件写，首次编译若有报错，把报错贴回来即可快速修：
-`RE::TESRace::HasKeyword`、`RE::ProcessLists` 的 `*ActorHandles` 字段名、
-`Actor::IsPlayerTeammate / IsSummoned`、`Actor::AddPerk` 的 rank 参数、
-`TESNPC::GetClass()`、`TESObjectREFR::GetEditorLocation1()`、
-`REX::EnumSet::get()`（战斗状态比较）、`ActorValueOwner::RestoreActorValue / DamageActorValue`、
-`TESNPC::GetFormEditorID()`、`TESAIForm::GetAggressionLevel / GetConfidenceLevel`、
+`RE::TESRace::HasKeyword`、`Actor::IsPlayerTeammate / IsSummoned`、`Actor::AddPerk` 的 rank 参数、
+`TESObjectREFR::GetEditorLocation()`、`stl::enumeration::get()`（战斗状态比较）、
+`ActorValueOwner::ModActorValue(ActorValue, float)`（2 参数）、
+`ActorValueOwner::RestoreActorValue(ACTOR_VALUE_MODIFIER, ActorValue, float)`（3 参数）、
+`TESNPC::npcClass`（**没有 `GetClass()`**）、`TESObjectREFR::GetReferenceRuntimeData().refScale`
+（**没有 `SetScale()`**）、`TESNPC::GetFormEditorID()`、
+`TESAIForm::GetAggressionLevel / GetConfidenceLevel`、
 `TESDataHandler::GetFormArray<RE::TESNPC>()`。
 
 还有一类风险**编译查不出来**——是运行时行为：`TESForm::GetFormEditorID()` 到底有没有值、
@@ -414,9 +416,10 @@ Boss 设定就等于不存在。
 **先在菜单里点一次「还原所有单位」**（重要），然后删掉 `EEA_Native.dll` / `.ini` / `.log`，
 把精简 ESP 换回原版 ESP，恢复 `scripts/`、`MCM/`、SkyPatcher 的 ini 即可。
 
-> **关于存档残留**：默认 `bUseTemporaryModifier=0` 走的是 `kPermanent` 桶 —— 也就是原版
-> Papyrus `ModAV` 用的同一个桶，**代价是数值会随存档保存**。所以卸载前务必先「还原所有单位」；
+> **关于存档残留**：属性上限写在 `kPermanent` 桶 —— 也就是原版 Papyrus `ModAV` 用的同一个桶
+> （CommonLibSSE-NG 3.7.0 没暴露带桶的 `ModActorValue`，所以没有别的选择），
+> **代价是数值会随存档保存**。所以卸载前务必先「还原所有单位」；
 > 万一忘了，读档后插件已不在，这些增量会留在角色身上（表现为敌人血量偏高）。
 > 这是刻意的取舍：换来的是「读档后可以认领、不会把残血敌人扣死」。
-> 如果你更在意「绝对不写存档」，把 `bUseTemporaryModifier` 改成 1 ——
-> 但那条路的上限行为我尚未实机验证，且读档时只能老老实实撤销重算。
+> 保持当前血量百分比那一步走的是 `kTemporary` 桶，只影响当前值、不写上限，
+> 回滚时会被重新计算的比例自然吸收。

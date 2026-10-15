@@ -97,7 +97,7 @@ GetShouldHelp(PlayerRef)    == 0      ; 这个 NPC 是否会帮助玩家
 | 遍历所有 NPC_ | `TESDataHandler::GetSingleton()->GetFormArray(FormType::NPC)` → `BSTArray<TESForm*>&` | `RE/T/TESDataHandler.h` |
 | 写 base AV | `TESActorBase::SetBaseActorValue(ActorValue, float)` | `RE/T/TESActorBase.h` |
 | 读 base AV | `TESActorBase::GetBaseActorValue(ActorValue)` | 同上 |
-| 写当前值 | `Actor::ModActorValue(ACTOR_VALUE_MODIFIER::kTemporary, ...)` | `RE/A/ActorValueOwner.h` |
+| 写当前值 | `ActorValueOwner::ModActorValue(ActorValue, float)`（**2 参数**，改永久修正；3 参数的带桶版本此版本不存在） | `RE/A/ActorValueOwner.h` |
 | 控制落盘 | `TESActorBase::AddChange(uint32_t)` / `RemoveChange(uint32_t)` | `RE/T/TESActorBase.h` |
 | 判断等级化 | `TESActorBase::IsLeveled()` | 同上 |
 | 判断模板 | `TESActorBaseData::UsesTemplate()` | `RE/T/TESActorBaseData.h` |

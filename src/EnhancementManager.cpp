@@ -29,6 +29,34 @@ namespace EEA
 			RE::ActorValue::kRestorationPowerModifier
 		};
 
+		// 设置 Actor 体型。
+		//
+		// CommonLibSSE-NG 3.7.0 对 Actor / TESObjectREFR 只暴露了 GetScale()，没有 SetScale，
+		// 而对 Actor 唯一带 float 参数的 SetSize 语义无法确证（可能不是体型）。
+		// 所以这里不走虚函数，直接写体型真正存放的两处：
+		//   ① 引用运行时数据 REFERENCE_RUNTIME_DATA::refScale —— 单位是「缩放 × 100」，
+		//      uint16 存 0.1~10 的小数位刚好够，这也是参与存档 / 重载的那一份
+		//   ② 当前 3D 节点的 local.scale —— 立刻生效的那一份
+		// 顺带置上 ChangeFlags::kScale，让引擎知道这个引用的体型变了。
+		//
+		// 这样做的另一层意义：原版 Papyrus 的 OrinScale 是个脚本局部变量，读档实例重建就丢值，
+		// 于是每读一次档「1.0 + 增量」就再加一遍，体型越滚越大。我们把原始体型存进 co-save，
+		// 每次都用「原始体型 + 增量」写绝对值，这才是真正根治那一处 bug 的地方。
+		inline void SetActorScale(RE::Actor* a_actor, float a_scale)
+		{
+			if (!a_actor) {
+				return;
+			}
+			const float s = std::clamp(a_scale, 0.05F, 10.0F);  // 与 setscale 的取值范围对齐
+
+			a_actor->GetReferenceRuntimeData().refScale = static_cast<std::uint16_t>(s * 100.0F);
+			a_actor->AddChange(RE::TESObjectREFR::ChangeFlags::kScale);
+
+			if (auto* obj3D = a_actor->GetCurrent3D()) {
+				obj3D->local.scale = s;
+			}
+		}
+
 		// 按 EditorID 解析任意表单类型；解析不到的只记一条日志，不中断
 		template <class T>
 		std::vector<T*> ResolveForms(const std::vector<std::string>& a_ids, const char* a_kind)
@@ -504,8 +532,9 @@ namespace EEA
 			return false;
 		}
 		if (auto* base = a_actor->GetActorBase()) {
+			// TESNPC 没有 GetClass()：职业是成员变量 npcClass（CNAM 子记录）。
 			for (auto* cls : dragonClasses_) {
-				if (cls && base->GetClass() == cls) {
+				if (cls && base->npcClass == cls) {
 					return true;
 				}
 			}
@@ -661,9 +690,6 @@ namespace EEA
 		}
 
 		const auto& s = Config::Get().Data();
-		const auto bucket = s.useTemporaryModifier
-		                        ? RE::ACTOR_VALUE_MODIFIER::kTemporary
-		                        : RE::ACTOR_VALUE_MODIFIER::kPermanent;
 
 		// (2) 生命 / 法力 / 体力：先记下「当前值占上限的比例」。
 		//     写完之后按同比例放回去，于是：
@@ -681,22 +707,47 @@ namespace EEA
 			ratio = std::clamp(a_actor->GetActorValue(a_av) / maxBefore, 0.0F, 1.0F);
 		}
 
-		// (3) 按净差写入。注意这里读的是 GetPermanentActorValue（上限侧），
-		//     而不是 GetActorValue —— 对生命而言后者返回的是「当前血量」，
-		//     拿它前后相减会算出错误的增量，进而导致每帧重复叠加。
-		a_actor->ModActorValue(bucket, a_av, net);
+		// (3) 按净差写入「上限」。
+		//
+		//     CommonLibSSE-NG 3.7.0 里 ActorValueOwner 暴露的 AV 写接口只有两个：
+		//       ModActorValue(ActorValue, float)                            —— 改「永久修正」
+		//       RestoreActorValue(ACTOR_VALUE_MODIFIER, ActorValue, float)   —— 改指定桶
+		//     2 参数的 ModActorValue 就是 Papyrus 的 ModAV（"permanently alters the
+		//     actor value"），也正是原作者脚本用的那个；它写的正是
+		//     GetPermanentActorValue 读的那一侧 —— 所以下面能立刻回读校验。
+		//
+		//     注意这里读的是 GetPermanentActorValue（上限侧），而不是 GetActorValue ——
+		//     对生命而言后者返回的是「当前血量」，拿它前后相减会算出错误的增量，
+		//     进而导致每帧重复叠加。
+		a_actor->ModActorValue(a_av, net);
 		const float maxAfter = a_actor->GetPermanentActorValue(a_av);
 		const float actual = maxAfter - maxBefore;
 
-		// (4) 把当前值按原比例放回去
-		if (vital && s.preserveCurrentRatio) {
+		// (4) 把当前值拉回「原比例 × 新上限」。
+		//
+		//     这里**没有** RestoreAV(av, max) 这类调用 —— 那正是原版
+		//     「进出门 / 区域重载 / 读档后敌人回满血」的根因。
+		//     我们只把当前值挪到目标；挪不动就保持原样，绝不无条件拉满。
+		//
+		//     实现走 kTemporary 桶：它只影响当前值、不改变 GetPermanentActorValue，
+		//     也不像 kDamage 桶在 0 处有夹取，正反两个方向都能走。
+		//     写完回读校验一次：若引擎的参数方向与预期相反（回读离目标更远），
+		//     立刻补一次反向偏移 —— 这样不依赖对参数符号的猜测。
+		if (vital && s.preserveCurrentRatio && maxAfter > kEps) {
 			const float desired = maxAfter * ratio;
-			const float cur = a_actor->GetActorValue(a_av);
-			const float diff = desired - cur;
-			if (diff > kEps) {
-				a_actor->RestoreActorValue(a_av, diff);
-			} else if (diff < -kEps) {
-				a_actor->DamageActorValue(a_av, -diff);
+			const float cur0 = a_actor->GetActorValue(a_av);
+			const float diff = desired - cur0;
+			if (std::abs(diff) > kEps) {
+				a_actor->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, a_av, diff);
+				const float cur1 = a_actor->GetActorValue(a_av);
+				if (std::abs(desired - cur1) > std::abs(diff) + kEps) {
+					// 方向相反：这一步实际走成了 -diff，补 -2*diff 才回得到目标
+					a_actor->RestoreActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, a_av, -2.0F * diff);
+				}
+				if (s.verboseLog) {
+					logger::info("[EEA] {} 当前值按比例调整：{:.1f} → {:.1f}（目标 {:.1f}，新上限 {:.1f}）",
+						a_actor->GetDisplayFullName(), cur0, a_actor->GetActorValue(a_av), desired, maxAfter);
+				}
 			}
 		}
 
@@ -719,8 +770,9 @@ namespace EEA
 			a_actor->RemovePerk(magicPerk_);
 		}
 		if (a_entry.scaleSaved) {
-			// 用「保存下来的原始体型」还原，而不是原版的 SetScale(1.0)
-			a_actor->SetScale(a_entry.origScale);
+			// 用「保存下来的原始体型」还原，而不是原版的 SetScale(1.0) ——
+			// 那个 1.0 会把本来就不是 1.0 倍的单位（比如某些 Boss）改成标准体型。
+			SetActorScale(a_actor, a_entry.origScale);
 		}
 	}
 
@@ -738,15 +790,15 @@ namespace EEA
 		const auto fid = a_actor->GetFormID();
 
 		// 上一份存档留下的记录。
-		// 用 kPermanent 桶时，这些数值仍写在角色身上（随存档保存），
-		// 所以这里是「认领」而不是「撤销」—— 撤销会把已经被打到残血的单位直接扣死。
+		// 属性上限写在 kPermanent 桶（也就是原版 Papyrus 的 ModAV），数值仍写在角色身上、
+		// 随存档一起保存了，所以这里是「认领」而不是「撤销」——
+		// 撤销会把已经被打到残血的单位直接扣死。
 		// （这正是原版读档后「残血敌人被拉满」的镜像问题，两边都得避开。）
+		//
+		// 注：这个版本没有「只写临时桶」的选项 —— 引擎未暴露带桶的 ModActorValue，
+		// 上限一律走永久修正（见 SetAVTotal 的说明），所以这里无条件认领。
 		if (auto it = pendingRevert_.find(fid); it != pendingRevert_.end()) {
-			if (!s.useTemporaryModifier) {
-				applied_[fid] = it->second;
-			} else {
-				RevertWith(a_actor, it->second);  // 临时桶不存盘，只能老实撤掉重算
-			}
+			applied_[fid] = it->second;
 			pendingRevert_.erase(it);
 		}
 
@@ -852,18 +904,21 @@ namespace EEA
 
 		if (wantScale) {
 			if (!entry.scaleSaved) {
-				// 只在第一次记录原始体型；之后读档也能精确还原
+				// 只在第一次记录原始体型；之后读档也能精确还原。
+				// 原版的 bug 就在这里：OrinScale 是 Papyrus 脚本的局部变量，读档实例重建
+				// 会丢值（退回 1.0），于是「1.0 + 增量」每读一次档就再加一遍，体型越读越大。
 				entry.origScale = a_actor->GetScale();
 				entry.scaleSaved = true;
 			}
 			const float target = entry.origScale + s.bossScale;
-			// 幂等：体型没变就不调 SetScale（原版每次刷新都调，这是掉帧主因）
-			if (std::abs(a_actor->GetScale() - target) > 0.005F) {
-				a_actor->SetScale(target);
+			// 幂等：与自己上次写进去的值比，而不是与引擎回读比 ——
+			// 写入口径与回读口径未必一致，用回读判断会导致次次都写（原版的掉帧主因）。
+			if (std::abs(entry.curScale - target) > 0.005F) {
+				SetActorScale(a_actor, target);
 				entry.curScale = target;
 			}
 		} else if (entry.scaleSaved) {
-			a_actor->SetScale(entry.origScale);
+			SetActorScale(a_actor, entry.origScale);
 			entry.scaleSaved = false;
 			entry.curScale = entry.origScale;
 		}
