@@ -20,11 +20,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 #   x64-windows              -> CommonLibSSE 是 /MD  -> 我们也要 /MD
 #   x64-windows-static       -> CommonLibSSE 是 /MT  -> 我们也要 /MT
 #   x64-windows-static-md    -> 静态库 + /MD        -> 还是 /MD
+# ⚠ MSVC_RUNTIME_LIBRARY 只有这 4 个合法取值，故意拼错 CMake 会在 try_compile
+# 阶段直接报 "MSVC_RUNTIME_LIBRARY value 'XXX' not known for this CXX compiler"：
+#   MultiThreaded   /MT      MultiThreadedDebug   /MTd
+#   MultiThreadedDLL /MD     MultiThreadedDebugDLL /MDd
+# 注意 Debug 夹在中间：是 MultiThreaded**Debug**DLL，不是 MultiThreadedDLLDebug。
 if(VCPKG_TARGET_TRIPLET MATCHES "static" AND NOT VCPKG_TARGET_TRIPLET MATCHES "static-md")
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    message(STATUS "EEA: 三元组 ${VCPKG_TARGET_TRIPLET} -> 静态 CRT (/MT)")
+    message(STATUS "EEA: 三元组 '${VCPKG_TARGET_TRIPLET}' -> 静态 CRT (/MT)")
 else()
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL$<$<CONFIG:Debug>:DebugDLL>")
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     message(STATUS "EEA: 三元组 '${VCPKG_TARGET_TRIPLET}' -> 动态 CRT (/MD)")
 endif()
 
