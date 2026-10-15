@@ -1,0 +1,49 @@
+name: build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 暴露 GitHub Actions 缓存变量（给 vcpkg 二进制缓存用）
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: 安装 vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          # 与 vcpkg.json 的 builtin-baseline 保持一致
+          vcpkgGitCommitId: 9e593bb18ea69cc5095e012465dcd675a822ed0d
+          vcpkgJsonGlob: 'vcpkg.json'
+
+      - name: 配置并编译
+        uses: lukka/run-cmake@v10
+        with:
+          cmakeListsTxtPath: '${{ github.workspace }}/CMakeLists.txt'
+          configurePreset: 'default'
+          buildPreset: 'release'
+
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: EEA_Native
+          if-no-files-found: error
+          path: |
+            dist/SKSE/Plugins/EEA_Native.dll
+            dist/SKSE/Plugins/EEA_Native.ini
+            dist/**/*.pdb

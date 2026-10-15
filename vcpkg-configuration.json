@@ -1,0 +1,31 @@
+{
+  "default-registry": {
+    "kind": "git",
+    "baseline": "9e593bb18ea69cc5095e012465dcd675a822ed0d",
+    "repository": "https://github.com/microsoft/vcpkg"
+  },
+  "registries": [
+    {
+      "kind": "git",
+      "repository": "https://gitlab.com/colorglass/vcpkg-colorglass",
+      "baseline": "6309841a1ce770409708a67a9ba5c26c537d2937",
+      "packages": [
+        "commonlibsse-ng",
+        "commonlibsse-ng-se",
+        "commonlibsse-ng-ae",
+        "commonlibsse-ng-vr",
+        "commonlibsse-ng-prebuilt",
+        "commonlibsse-ng-flatrim",
+        "commonlibsse-po3-se",
+        "commonlibsse-po3-ae",
+        "commonlibsse",
+        "bethesda-skyrim-scripts",
+        "script-extender-common",
+        "skse",
+        "articuno",
+        "champollion",
+        "tsl-hat-trie"
+      ]
+    }
+  ]
+}

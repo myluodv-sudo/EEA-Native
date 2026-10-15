@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "eea-native",
+  "version-string": "1.0.0",
+  "description": "动态增强敌人属性 —— 原生 SKSE 插件版本",
+  "homepage": "https://www.nexusmods.com/skyrimspecialedition/mods/65861",
+  "builtin-baseline": "9e593bb18ea69cc5095e012465dcd675a822ed0d",
+  "dependencies": [
+    "commonlibsse-ng-se"
+  ]
+}

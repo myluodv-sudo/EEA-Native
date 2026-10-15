@@ -1,0 +1,17 @@
+# ---- 编译中间产物 ----
+build/
+build-ninja/
+out/
+.vs/
+*.user
+
+# ---- 编译产物 ----
+# dll / pdb / log 不进仓库（由 CI 生成）
+# 注意：dist/EnhanceEnemyAttributes.esp 是手工制作的精简 ESP，属于源文件，必须保留
+dist/SKSE/Plugins/*.dll
+dist/SKSE/Plugins/*.pdb
+dist/SKSE/Plugins/*.log
+dist/SKSE/Plugins/*.ini
+
+# ---- vcpkg ----
+vcpkg_installed/

@@ -1,0 +1,12 @@
+# 统一换行符，避免 Windows 本地的 CRLF 影响 CI 与脚本执行
+* text=auto eol=lf
+
+# 二进制文件不要动
+*.esp binary
+*.esm binary
+*.esl binary
+*.dll binary
+*.pdb binary
+*.png binary
+*.jpg binary
+*.ico binary
