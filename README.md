@@ -77,6 +77,7 @@ EEA_Native.log        ← 运行后自动生成，排查问题就看它
 
 **需要保留**：`EnhanceEnemyAttributes.esp`，但建议用 `tools/make_minimal_esp.py` 精简成只含 1 条 Perk 的版本
 （原文件里 69 条记录，其余 68 条 DLL 已全部接管；不精简的话里面的 MCM Quest 会去调已删除的脚本，日志刷错误）。
+精简版已随仓库放在 `native/dist/EnhanceEnemyAttributes.esp`（365 字节，原版 13,211 字节）。
 
 > 顺带说明：原 ESP 头部本来就带 **ESL 标记**（`flags = 0x200`），走的是 FE 轻量插件槽位，
 > 所以它并不占用你 255 个常规插件槽中的一格 —— 精简后依然如此（1 条记录，本地 ID 0xC59 < 0xFFF）。
@@ -85,6 +86,28 @@ EEA_Native.log        ← 运行后自动生成，排查问题就看它
 `SKSE/Plugins/SkyPatcher/npc/EnhanceEnemyAttributes.ini`
 
 > ⚠️ 不要和原版 Papyrus 版同时启用 —— 会双重加成。
+
+### 这一版 DLL 已经过产物体检
+
+每次 CI 编译完都会跑 `tools/pe_info.py --strict` 当门禁，当前这版实测结果：
+
+| 检查项 | 结果 |
+|---|---|
+| 架构 | x64 ✓ |
+| SKSE 导出 | `SKSEPlugin_Version` / `SKSEPlugin_Load` / `SKSEPlugin_Query` ✓ |
+| 运行库口径 | 静态 CRT（/MT），**不需要** VC++ Redistributable ✓ |
+| 导入表 | 只有 `KERNEL32.dll` / `USER32.dll` / `VERSION.dll` ✓ 无任何需要随包分发的第三方 DLL |
+
+自己复核：
+
+```bash
+python tools/pe_info.py --strict dist/SKSE/Plugins/EEA_Native.dll
+```
+
+> 注意 `--strict` 会拦下三类「能编译但装上去加载不了」的问题：缺 SKSE 导出、
+> 链了调试版 CRT、依赖了 `fmt.dll` / `spdlog.dll` 这类外部 DLL。
+> 最后一条是真实踩过的坑：vcpkg 用默认三元组 `x64-windows` 时，
+> CommonLibSSE-NG 会把 fmt/spdlog 当动态库链进来，而 MOD 包里没有这两个文件。
 
 ---
 
