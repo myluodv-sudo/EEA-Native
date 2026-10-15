@@ -73,7 +73,34 @@ OnObjectLoaded(formID)
 Queue(actor, /*a_force=*/true)
 ```
 
-两条路径最终都汇进同一个队列。
+**路径 C —— 显式要求重算**（菜单改设置 / 点「立即刷新全部」/ 玩家升级）
+
+```
+RefreshAll(/*a_force=*/true)
+  ├─ 清空队列与 forced_
+  ├─ 弹「正在更新敌人属性」                （bNotifyOnRefresh=1 时）
+  ├─ QueueAllLoaded(a_force=true)          → 每个单位 Queue(actor, true)
+  └─ 队列跑空时 ProcessSome() 弹「敌人属性已更新」
+```
+
+`a_force` 在 `ApplyTo()` 里决定要不要越过「仅战斗触发」这道门：
+
+```cpp
+if (s.triggerMode == 1 && !a_forced && applied_.find(fid) == applied_.end()) {
+    return;   // Combat 模式下，全新单位留到它进入战斗那一刻
+}
+```
+
+所以 **A 路径（自动）受 `iTriggerMode` 约束，C 路径（人工）一律 `force=true`**。
+这条区别是必须的：用户在菜单里改了数值，期待的是立刻看到变化，而不是「等我下次打起来再说」。
+早期版本让菜单也走 `force=false`，结果 `iTriggerMode=1` 时改设置对全部已加载单位都是空操作 ——
+表现就是「菜单能改但完全不生效」。
+
+**屏幕提示**走 `RE::DebugNotification`（声明在 `RE/M/Misc.h`，地址库 ID `52050`），
+也就是原版 Papyrus `Debug.Notification` 用的同一个引擎接口，所以显示位置与原版一致。
+文案直接沿用原版翻译文件的 `$EEAStartUpdate` / `$EEAFinishUpdate` / `$EEAInit`。
+调用一律经 `SKSE::GetTaskInterface()->AddTask` 投到主线程（菜单回调不保证在主线程上），
+并且「正在更新」做了 500 ms 节流 —— 拖滑块时菜单每帧都会触发刷新。
 
 ### 2.3 队列：跨帧摊平
 
@@ -520,18 +547,61 @@ Nexus 上「龙不受影响」的反馈就是这条造成的，不是被别的�
 
 ```
 ① s.master                     总开关
-② 非空 && !IsDead() && !IsDisabled() && FormType==NPC && 有 ActorBase
-③ GetLevel() >= minLevel
-④ IsPlayerActor()  ──→ return affectPlayer     【无条件，独立于所有过滤器】
-⑤ PassBaseFilters()            6 个 ACBS 开关 + 随从派系
-⑥ bExcludeDragons && (IsDragon || IsDragonClass)
-⑦ bExcludeFollowers && (IsPlayerTeammate || 在随从派系里)
-⑧ bExcludeSummons && IsSummoned()
-⑨ 至少一个属性开着，或者 Boss 体型加成 > 0
+② 非空 && !IsDead() && !IsDisabled()
+③ FormType ∈ { ActorCharacter, NPC } && 有 ActorBase
+④ GetLevel() >= minLevel
+⑤ IsPlayerActor()  ──→ return affectPlayer     【无条件，独立于所有过滤器】
+⑥ PassBaseFilters()            6 个 ACBS 开关 + 随从派系
+⑦ bExcludeDragons && (IsDragon || IsDragonClass)
+⑧ bExcludeFollowers && (IsPlayerTeammate || 在随从派系里)
+⑨ bExcludeSummons && IsSummoned()
+⑩ 至少一个属性开着，或者 Boss 体型加成 > 0
 ```
 
-注意 ⑨：**一个属性都不开、但 Boss 体型加成开着**时，单位仍然会被处理 ——
+注意 ⑩：**一个属性都不开、但 Boss 体型加成开着**时，单位仍然会被处理 ——
 因为体型是独立于五个属性的另一项加成。
+
+每个 `return false` 都带一句中文原因（`const char** a_reason` 回填），
+7.8 节的判定诊断就是靠它统计出「每个过滤器各拒了多少」。
+
+#### ③ 的坑：`FormType::NPC` ≠ 场景里的单位
+
+这是本工程代价最大的一个 bug，写在这里防止再犯：
+
+| 枚举 | 值 | 是什么 |
+|---|---|---|
+| `RE::FormType::NPC` | `0x2B` (43) | **NPC_ 记录**本身（基对象 `TESNPC`） |
+| `RE::FormType::Reference` | `0x3D` (61) | 普通 `REFR` 引用 |
+| `RE::FormType::ActorCharacter` | `0x3E` (62) | **场景里的单位引用**（`ACHR`，含 `PlayerCharacter`） |
+
+早期写成 `GetFormType() != FormType::NPC → false`，于是**每一个真实单位**都在第 ③ 步被丢掉。
+症状极具误导性：插件加载正常、菜单注册成功、`已把 8848 个已加载单位排入队列`，
+但存档写入是 `已把 0 条强化记录写进存档`，且永远没有一条 `首次强化` ——
+看上去像「没触发」，实际是「触发了但全被拒」。
+
+判定依据就在 CommonLibSSE-NG 自己的 `include/RE/F/FormTypes.h`，枚举每一行都带注释：
+
+```cpp
+NPC,            // 2B NPC_  TESNPC
+Reference,      // 3D REFR  TESObjectREFR
+ActorCharacter, // 3E ACHR  Actor / Character / PlayerCharacter
+```
+
+### 7.8 判定诊断（`RunFilterCensus`）
+
+为了不再靠猜，新增了一个自证装置：采样最多 3000 个已加载单位，
+把 7.7 那条链每级的拒绝原因各统计多少个，写进日志并显示在菜单「关于/性能」页。
+
+```
+[EEA] ===== 判定诊断：采样 3000 个已加载单位（玩家等级 42，minLevel 10）=====
+[EEA] 通过全部判定、会被强化：1 个
+[EEA]   被拒：等级低于 minLevel × 2841
+[EEA]   被拒：龙类（bExcludeDragons） × 3
+[EEA]   例：巨人（等级 32）
+[EEA] ===== 诊断结束 =====
+```
+
+读档后自动跑一次（一次遍历，开销可忽略），菜单里也有「运行判定诊断」按钮。
 
 ---
 

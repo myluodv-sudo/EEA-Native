@@ -3,6 +3,11 @@ name: build
 on:
   push:
     branches: [ main, master ]
+    # 只改文档（README / MECHANICS / DESIGN）时不必编一遍 —— 编译一次要 4~12 分钟。
+    # 注意：tools/ 不忽略，因为体检步骤要用 tools/pe_info.py。
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
   pull_request:
   workflow_dispatch:
 
