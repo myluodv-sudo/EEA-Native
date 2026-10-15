@@ -246,7 +246,7 @@ namespace EEA
 	{
 		LoadPerkAndKeywords();
 		logger::info("[EEA] 数据加载完成，开始工作。");
-		QueueAllLoaded();
+		QueueAllLoaded(/*a_force=*/false);
 	}
 
 	void Manager::OnPreLoadGame()
@@ -257,13 +257,21 @@ namespace EEA
 		queue_.clear();
 		queued_.clear();
 		forced_.clear();
+		notifyOnDrain_ = false;
 	}
 
 	void Manager::OnPostLoadGame()
 	{
 		LoadPerkAndKeywords();
-		QueueAllLoaded();
+		QueueAllLoaded(/*a_force=*/false);
 		logger::info("[EEA] 读档完成，待回滚 {} 条、待处理 {} 个。", pendingRevert_.size(), queue_.size());
+
+		// 读档后立刻做一次判定诊断 —— 万一以后又「一条都没生效」，
+		// 日志里会直接写明是哪个过滤器把所有人拒了，不用再来回猜。
+		RunFilterCensus();
+
+		// 对应原版的 $EEAInit（「敌人属性强化已装载」）
+		Notify("敌人属性强化已装载");
 	}
 
 	void Manager::OnNewGame()
@@ -297,7 +305,7 @@ namespace EEA
 		ScheduleTick();
 	}
 
-	void Manager::QueueAllLoaded()
+	void Manager::QueueAllLoaded(bool a_force)
 	{
 		auto* pl = RE::ProcessLists::GetSingleton();
 		if (!pl) {
@@ -311,12 +319,13 @@ namespace EEA
 					continue;
 				}
 				if (auto* actor = ref->As<RE::Actor>()) {
-					Queue(actor);
+					Queue(actor, a_force);
 					++n;
 				}
 			}
 		}
-		logger::info("[EEA] 已把 {} 个已加载单位排入队列。", n);
+		logger::info("[EEA] 已把 {} 个已加载单位排入队列（{}）。",
+			n, a_force ? "显式请求，无视触发模式" : "按触发模式过滤");
 	}
 
 	void Manager::OnObjectLoaded(RE::FormID a_formID)
@@ -378,6 +387,13 @@ namespace EEA
 			}
 			const bool forced = forced_.erase(fid) > 0;
 			ApplyTo(actor, forced);
+		}
+
+		// 队列跑空 = 这一轮全量重算结束 → 弹「敌人属性已更新」
+		// （对应原版 UpdateEnemyAV.psc 里的 $EEAFinishUpdate）
+		if (queue_.empty() && notifyOnDrain_) {
+			notifyOnDrain_ = false;
+			Notify("敌人属性已更新");
 		}
 	}
 
@@ -612,25 +628,54 @@ namespace EEA
 		return true;
 	}
 
-	bool Manager::IsEligible(RE::Actor* a_actor) const
+	bool Manager::IsEligible(RE::Actor* a_actor, const char** a_reason) const
 	{
+		auto fail = [a_reason](const char* a_why) {
+			if (a_reason) {
+				*a_reason = a_why;
+			}
+			return false;
+		};
+
 		const auto& s = Config::Get().Data();
 
 		if (!s.master) {
-			return false;
+			return fail("总开关关闭");
 		}
-		if (!a_actor || a_actor->IsDead()) {
-			return false;
+		if (!a_actor) {
+			return fail("空引用");
+		}
+		if (a_actor->IsDead()) {
+			return fail("已死亡");
 		}
 		if (a_actor->IsDisabled()) {
-			return false;
+			return fail("已禁用");
 		}
-		if (a_actor->GetFormType() != RE::FormType::NPC || !a_actor->GetActorBase()) {
-			return false;
+
+		// ---- 引用类型 ----
+		// 这里是本工程最贵的一个教训，务必别再改回去：
+		//
+		//   RE::FormType::NPC             = 0x2B，是 **NPC_ 记录**（基对象 TESNPC）的类型
+		//   RE::FormType::ActorCharacter  = 0x3E，才是**场景里的单位引用**（ACHR）的类型
+		//
+		// 之前写成 `GetFormType() != FormType::NPC`，于是每一个真实单位都在这一步被拒 ——
+		// 表现就是「插件正常加载、八千个单位排进队列、存档里一条强化记录都没有」。
+		// 判定依据：CommonLibSSE-NG 的 FormTypes.h 枚举注释
+		//   NPC,            // 2B NPC_  TESNPC
+		//   Reference,      // 3D REFR  TESObjectREFR
+		//   ActorCharacter, // 3E ACHR  Actor / Character / PlayerCharacter
+		//
+		// 两个都接受（NPC 那条是给「直接拿到基对象」之类非常规调用留的余地）。
+		const auto formType = a_actor->GetFormType();
+		if (formType != RE::FormType::ActorCharacter && formType != RE::FormType::NPC) {
+			return fail("引用类型不是 Actor");
+		}
+		if (!a_actor->GetActorBase()) {
+			return fail("没有 ActorBase");
 		}
 
 		if (a_actor->GetLevel() < static_cast<std::uint16_t>(std::max(0, s.minLevel))) {
-			return false;
+			return fail("等级低于 minLevel");
 		}
 
 		// ---- 玩家：无条件排除（除非显式打开 bAffectPlayer）----
@@ -638,18 +683,21 @@ namespace EEA
 		// 否则用户关掉 bSkipUnique 之类的时候，玩家就会被漏进来。
 		// 但它仍然受 minLevel 约束 —— 保持与旧版一致，不悄悄改变已有行为。
 		if (IsPlayerActor(a_actor)) {
-			return s.affectPlayer;
+			if (s.affectPlayer) {
+				return true;
+			}
+			return fail("玩家本体");
 		}
 
 		// ---- 定义层过滤（NPC_ 记录自身）----
 		if (!PassBaseFilters(a_actor)) {
-			return false;
+			return fail("定义层过滤器（ACBS/派系）");
 		}
 
 		// 龙类是否排除在属性强化之外 —— 原版 ESP 就是在整条法术条件链里排掉了龙，
 		// 所以原版「龙不受影响」并不是被别的龙类 MOD 覆盖，而是它自己的设计。
 		if (s.excludeDragons && (IsDragon(a_actor) || IsDragonClass(a_actor))) {
-			return false;
+			return fail("龙类（bExcludeDragons）");
 		}
 
 		// 随从 / 召唤物排除。
@@ -657,10 +705,10 @@ namespace EEA
 		// 也就是「是敌人、而且不会帮玩家」；下面用运行时的队友 / 召唤判据来近似，
 		// 注意 IsPlayerTeammate() 只认「此刻已被招募」的随从。
 		if (s.excludeFollowers && a_actor->IsPlayerTeammate()) {
-			return false;
+			return fail("随从（bExcludeFollowers）");
 		}
 		if (s.excludeSummons && a_actor->IsSummoned()) {
-			return false;
+			return fail("召唤物（bExcludeSummons）");
 		}
 
 		// 至少要有一个属性是开着的，否则不参与
@@ -671,7 +719,10 @@ namespace EEA
 				break;
 			}
 		}
-		return any || (s.bossEnabled && std::abs(s.bossScale) > kEps);
+		if (!any && !(s.bossEnabled && std::abs(s.bossScale) > kEps)) {
+			return fail("五个属性开关全关");
+		}
+		return true;
 	}
 
 	// ---------------------------------------------------------------- AV 施加 / 回滚
@@ -967,12 +1018,122 @@ namespace EEA
 		}
 	}
 
-	void Manager::RefreshAll()
+	void Manager::RefreshAll(bool a_force)
 	{
 		queue_.clear();
 		queued_.clear();
-		QueueAllLoaded();
-		logger::info("[EEA] 已请求全量刷新。");
+
+		// 重算会重新给出 forced_ 标记；先清掉旧的，避免上一轮的残留影响这一轮。
+		forced_.clear();
+
+		// 先弹「正在更新敌人属性」，队列跑空时 ProcessSome() 弹「敌人属性已更新」。
+		// 这两句就是原版 $EEAStartUpdate / $EEAFinishUpdate 的对应物。
+		if (a_force) {
+			const auto now = std::chrono::steady_clock::now();
+			if (now - lastNotifyStart_ > std::chrono::milliseconds(500)) {
+				lastNotifyStart_ = now;
+				Notify("正在更新敌人属性");
+			}
+			notifyOnDrain_ = true;
+		}
+
+		QueueAllLoaded(a_force);
+		logger::info("[EEA] 已请求全量刷新（{}）。", a_force ? "强制" : "按触发模式");
+
+		// 极端情况：一个可入队单位都没有 → 队列永远跑不到「空事件」，
+		// 这里补一次，免得「正在更新」弹出来之后没有下文。
+		if (queue_.empty() && notifyOnDrain_) {
+			notifyOnDrain_ = false;
+			Notify("敌人属性已更新");
+		}
+	}
+
+	// ---------------------------------------------------------------- 屏幕提示
+
+	// 等价于 Papyrus 的 Debug.Notification。
+	// 用 CommonLibSSE-NG 的 RE::DebugNotification（声明于 RE/M/Misc.h，地址库 52050），
+	// 所以显示位置、样式与原版的「正在更新敌人属性 / 敌人属性已更新」完全一致。
+	//
+	// 走 AddTask 投到主线程：菜单的 Render 回调与事件回调都不保证在主线程上，
+	// 而 HUD 通知必须在主线程发。
+	void Manager::Notify(std::string_view a_text)
+	{
+		if (!Config::Get().Data().notifyOnRefresh) {
+			return;
+		}
+		std::string text{ a_text };
+		SKSE::GetTaskInterface()->AddTask([text = std::move(text)]() {
+			// 第三参数用默认的 true：新提示会顶掉还没显示完的旧提示，
+			// 所以连续操作不会在通知队列里堆出一长串。
+			RE::DebugNotification(text.c_str());
+		});
+	}
+
+	// ---------------------------------------------------------------- 判定诊断
+
+	// 把「每个过滤器各拒了多少个单位」算一遍写进日志。
+	// 只在读档后与手动点按钮时跑，一次最多采样 kCap 个，开销可忽略。
+	void Manager::RunFilterCensus()
+	{
+		auto* pl = RE::ProcessLists::GetSingleton();
+		if (!pl) {
+			logger::warn("[EEA] 判定诊断：取不到 ProcessLists，跳过。");
+			return;
+		}
+
+		constexpr std::size_t kCap = 3000;
+		std::map<std::string, std::size_t> reasons;
+		CensusStats                        stats;
+
+		auto* pc = RE::PlayerCharacter::GetSingleton();
+		const int pcLevel = pc ? static_cast<int>(pc->GetLevel()) : 0;
+
+		for (auto* list : { &pl->highActorHandles, &pl->middleHighActorHandles, &pl->lowActorHandles }) {
+			for (auto& handle : *list) {
+				if (stats.scanned >= kCap) {
+					break;
+				}
+				auto ref = handle.get();
+				if (!ref) {
+					continue;
+				}
+				auto* actor = ref->As<RE::Actor>();
+				if (!actor) {
+					continue;
+				}
+				++stats.scanned;
+
+				const char* why = nullptr;
+				if (IsEligible(actor, &why)) {
+					++stats.eligible;
+					if (stats.examples.size() < 5) {
+						std::string who{ actor->GetDisplayFullName() ? actor->GetDisplayFullName() : "?" };
+						who += "（等级 " + std::to_string(actor->GetLevel()) + (IsBoss(actor) ? "，Boss）" : "）");
+						stats.examples.push_back(std::move(who));
+					}
+				} else {
+					++reasons[why ? why : "未知原因"];
+				}
+			}
+		}
+
+		logger::info("[EEA] ===== 判定诊断：采样 {} 个已加载单位（玩家等级 {}，minLevel {}）=====",
+			stats.scanned, pcLevel, Config::Get().Data().minLevel);
+		logger::info("[EEA] 通过全部判定、会被强化：{} 个", stats.eligible);
+		for (const auto& [why, n] : reasons) {
+			logger::info("[EEA]   被拒：{} × {}", why, n);
+			stats.reasons.emplace_back(why, n);
+		}
+		for (const auto& e : stats.examples) {
+			logger::info("[EEA]   例：{}", e);
+		}
+		if (stats.scanned > 0 && stats.eligible == 0) {
+			logger::warn("[EEA] 采样里没有任何单位能通过判定 —— 先看上面的「被拒」清单，"
+						 "最常见的是 minLevel 太高（默认 10），或属性开关全关。");
+		}
+		logger::info("[EEA] ===== 诊断结束 =====");
+
+		lastCensus_ = std::move(stats);
 	}
 
 	// ---------------------------------------------------------------- 序列化

@@ -27,9 +27,10 @@ namespace EEA
 		void SerializeLoad(SKSE::SerializationInterface* a_intfc);
 
 		// ---- 入队 ----
-		// a_force = true 表示「这次是战斗事件驱动的」，Combat 模式下只有带这个标记的才处理
+		// a_force = true 表示「这次是显式要求」：Combat 模式（iTriggerMode=1）下只有带这个标记的
+		// 才处理。战斗事件、菜单改设置、手动刷新走的都是这条路。
 		void Queue(RE::Actor* a_actor, bool a_force = false);
-		void QueueAllLoaded();
+		void QueueAllLoaded(bool a_force = false);
 
 		// 对象加载事件的统一入口（顺带检测玩家升级 → 全量刷新）
 		void OnObjectLoaded(RE::FormID a_formID);
@@ -37,12 +38,33 @@ namespace EEA
 		// ---- 强制操作（菜单按钮）----
 		void RevertAll();
 		void RevertOne(RE::Actor* a_actor);
-		void RefreshAll();
+
+		// 全量重算。
+		// a_force = true（默认）会把「已加载单位」全部按显式请求处理 —— 也就是**无视**
+		// iTriggerMode=1 的「仅战斗触发」。这是必须的：用户在菜单里改了数字，期待的是
+		// 立刻看到变化，而不是「等我下次打起来再说」。
+		void RefreshAll(bool a_force = true);
+
+		// 把一次判定诊断（每个过滤器各拒了多少个）写进日志，用来定位「为什么不生效」。
+		void RunFilterCensus();
 
 		// ---- 状态（菜单显示）----
 		std::size_t TrackedCount() const { return applied_.size() + pendingRevert_.size(); }
 		std::size_t QueueSize() const { return queue_.size(); }
 		bool        IsPerkAvailable() const { return magicPerk_ != nullptr; }
+
+		// 上一次 RunFilterCensus 的结果（菜单「关于/性能」页显示）
+		struct CensusStats
+		{
+			std::size_t scanned = 0;
+			std::size_t eligible = 0;
+			std::vector<std::pair<std::string, std::size_t>> reasons;  // 拒绝原因 → 个数
+			std::vector<std::string>                         examples; // 可强化单位举例
+		};
+		const CensusStats& LastCensus() const { return lastCensus_; }
+
+		// 屏幕提示（等价于 Papyrus 的 Debug.Notification），主线程执行
+		static void Notify(std::string_view a_text);
 
 		// 启动时探测的结果：运行时能不能读到 EditorID。
 		// 决定 Boss 判定第 [2] 级（EditorID 含 "Boss"）是否真的在工作。
@@ -77,7 +99,9 @@ namespace EEA
 		void  RevertWith(RE::Actor* a_actor, const Applied& a_entry);
 		void  RevertEntry(RE::Actor* a_actor, Applied& a_entry);
 
-		bool  IsEligible(RE::Actor* a_actor) const;
+		// 判定「这个单位该不该被强化」。
+		// a_reason 非空时回填「被拒原因」（中文短句），供诊断统计使用。
+		bool  IsEligible(RE::Actor* a_actor, const char** a_reason = nullptr) const;
 
 		// 玩家判定：引用级 + 定义级双保险。
 		// 之所以要「定义级」，是因为还有一条路线（方案 D）直接遍历 NPC_ 数组做定义层改写 ——
@@ -148,5 +172,15 @@ namespace EEA
 
 		RE::BGSPerk*                    magicPerk_{ nullptr };
 		int                             lastPlayerLevel_{ -1 };
+
+		CensusStats                     lastCensus_{};
+
+		// 「这一轮刷新结束后要弹一次『已更新』」的标记。
+		// 由 RefreshAll() 置位，ProcessSome() 把队列跑空时消费。
+		bool                            notifyOnDrain_{ false };
+
+		// 「正在更新敌人属性」的节流：拖滑块时每帧都会触发刷新，
+		// 不节流的话通知会刷屏。500ms 内只弹一次。
+		std::chrono::steady_clock::time_point lastNotifyStart_{};
 	};
 }

@@ -147,7 +147,9 @@ namespace EEA::Menu
 
 			ImGuiMCP::SeparatorText("操作");
 			if (ImGuiMCP::Button("立即刷新全部##refresh")) {
-				mgr.RefreshAll();
+				// 强制：无视「仅进入战斗时才强化」，把已加载单位全部重算一遍，
+				// 并在屏幕上弹「正在更新敌人属性 / 敌人属性已更新」（可关）。
+				mgr.RefreshAll(/*a_force=*/true);
 			}
 			ImGuiMCP::SameLine();
 			if (ImGuiMCP::Button("还原所有单位##revert")) {
@@ -157,6 +159,34 @@ namespace EEA::Menu
 			if (ImGuiMCP::Button("保存到 INI##save")) {
 				cfg.SaveToDisk();
 			}
+			ImGuiMCP::SameLine();
+			if (ImGuiMCP::Button("运行判定诊断##census")) {
+				mgr.RunFilterCensus();
+			}
+			ImGuiMCP::TextUnformatted("诊断结果写进 EEA_Native.log：每个过滤器各拒了多少个单位。");
+
+			{
+				const auto& c = mgr.LastCensus();
+				if (c.scanned > 0) {
+					ImGuiMCP::SeparatorText("上次判定诊断");
+					ImGuiMCP::Text("采样：%llu 个已加载单位", static_cast<unsigned long long>(c.scanned));
+					ImGuiMCP::Text("通过全部判定：%llu 个", static_cast<unsigned long long>(c.eligible));
+					for (const auto& [why, n] : c.reasons) {
+						ImGuiMCP::Text("　被拒：%s × %llu", why.c_str(),
+							static_cast<unsigned long long>(n));
+					}
+					for (const auto& e : c.examples) {
+						ImGuiMCP::Text("　例：%s", e.c_str());
+					}
+				}
+			}
+
+			ImGuiMCP::SeparatorText("屏幕提示");
+			if (ImGuiMCP::Checkbox("改设置时弹提示##notify", &a_s.notifyOnRefresh)) {
+				Config::Get().MarkDirty();
+			}
+			ImGuiMCP::TextUnformatted("与原版一致：改任意设置后在屏幕上弹「正在更新敌人属性」，");
+			ImGuiMCP::TextUnformatted("全部重算完成后再弹「敌人属性已更新」。");
 
 			ImGuiMCP::SeparatorText("性能");
 			ImGuiMCP::SetNextItemWidth(360.0F);
@@ -177,6 +207,7 @@ namespace EEA::Menu
 				}
 				ImGuiMCP::Text("勾选后可以把最低等级一路调到 1 —— 只有真打起来的单位才会被处理，");
 				ImGuiMCP::Text("不会因为满地小动物而让队列堆积（原版作者当年就是因此不建议 1 级生效）。");
+				ImGuiMCP::TextUnformatted("注意：本开关只管「自动触发」。在这里改任何设置都会立刻重算全部单位。");
 			}
 
 			ImGuiMCP::SeparatorText("血量处理");
