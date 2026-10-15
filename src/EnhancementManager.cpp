@@ -246,7 +246,7 @@ namespace EEA
 	{
 		LoadPerkAndKeywords();
 		logger::info("[EEA] 数据加载完成，开始工作。");
-		QueueAllLoaded(/*a_force=*/false);
+		QueueAllLoaded();
 	}
 
 	void Manager::OnPreLoadGame()
@@ -256,14 +256,13 @@ namespace EEA
 		pendingRevert_.clear();
 		queue_.clear();
 		queued_.clear();
-		forced_.clear();
 		notifyOnDrain_ = false;
 	}
 
 	void Manager::OnPostLoadGame()
 	{
 		LoadPerkAndKeywords();
-		QueueAllLoaded(/*a_force=*/false);
+		QueueAllLoaded();
 		logger::info("[EEA] 读档完成，待回滚 {} 条、待处理 {} 个。", pendingRevert_.size(), queue_.size());
 
 		// 读档后立刻做一次判定诊断 —— 万一以后又「一条都没生效」，
@@ -280,13 +279,12 @@ namespace EEA
 		pendingRevert_.clear();
 		queue_.clear();
 		queued_.clear();
-		forced_.clear();
 		LoadPerkAndKeywords();
 	}
 
 	// ---------------------------------------------------------------- 入队
 
-	void Manager::Queue(RE::Actor* a_actor, bool a_force)
+	void Manager::Queue(RE::Actor* a_actor)
 	{
 		if (!a_actor) {
 			return;
@@ -295,9 +293,6 @@ namespace EEA
 		if (fid == 0) {
 			return;
 		}
-		if (a_force) {
-			forced_.insert(fid);  // 即便已在队列里，也要把「战斗驱动」这个标记补上
-		}
 		if (!queued_.emplace(fid).second) {
 			return;  // 已在队列里
 		}
@@ -305,7 +300,7 @@ namespace EEA
 		ScheduleTick();
 	}
 
-	void Manager::QueueAllLoaded(bool a_force)
+	void Manager::QueueAllLoaded()
 	{
 		auto* pl = RE::ProcessLists::GetSingleton();
 		if (!pl) {
@@ -319,13 +314,12 @@ namespace EEA
 					continue;
 				}
 				if (auto* actor = ref->As<RE::Actor>()) {
-					Queue(actor, a_force);
+					Queue(actor);
 					++n;
 				}
 			}
 		}
-		logger::info("[EEA] 已把 {} 个已加载单位排入队列（{}）。",
-			n, a_force ? "显式请求，无视触发模式" : "按触发模式过滤");
+		logger::info("[EEA] 已把 {} 个已加载单位排入队列。", n);
 	}
 
 	void Manager::OnObjectLoaded(RE::FormID a_formID)
@@ -338,18 +332,12 @@ namespace EEA
 				lastPlayerLevel_ = lv;
 				if (hadValue) {
 					logger::info("[EEA] 玩家等级变化 → {}，请求全量刷新。", lv);
-					RefreshAll();
+					RefreshAll(/*a_notify=*/false);  // 升级是自动发生的，不弹提示
 				}
 			}
 		}
 
-		// Combat 模式（iTriggerMode=1）：加载时不入队，等这些单位进入战斗再处理。
-		// 这样 minLevel 可以一直降到 1，而不会被满地的小动物（兔子/狐狸/鹿）撑爆队列 ——
-		// 作者当年拒绝做「1 级生效」的原因正是脚本实例数量，插件时代没这个约束。
-		if (Config::Get().Data().triggerMode == 1) {
-			return;
-		}
-
+		// 单位一加载就入队 —— 与原版一致：不进入战斗也加成。
 		auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_formID);
 		if (ref) {
 			if (auto* actor = ref->As<RE::Actor>()) {
@@ -382,11 +370,9 @@ namespace EEA
 
 			auto* actor = RE::TESForm::LookupByID<RE::Actor>(fid);
 			if (!actor || actor->GetFormID() != fid) {
-				forced_.erase(fid);
 				continue;  // 已卸载/已删除
 			}
-			const bool forced = forced_.erase(fid) > 0;
-			ApplyTo(actor, forced);
+			ApplyTo(actor);
 		}
 
 		// 队列跑空 = 这一轮全量重算结束 → 弹「敌人属性已更新」
@@ -835,7 +821,7 @@ namespace EEA
 
 	// ---------------------------------------------------------------- 主逻辑
 
-	void Manager::ApplyTo(RE::Actor* a_actor, bool a_forced)
+	void Manager::ApplyTo(RE::Actor* a_actor)
 	{
 		const auto& s = Config::Get().Data();
 		const auto fid = a_actor->GetFormID();
@@ -851,12 +837,6 @@ namespace EEA
 		if (auto it = pendingRevert_.find(fid); it != pendingRevert_.end()) {
 			applied_[fid] = it->second;
 			pendingRevert_.erase(it);
-		}
-
-		// Combat 模式（iTriggerMode=1）：只处理「战斗驱动的」与「此前已强化过的」单位，
-		// 全新单位留到它进入战斗那一刻 —— 这样 minLevel 可以放心设成 1。
-		if (s.triggerMode == 1 && !a_forced && applied_.find(fid) == applied_.end()) {
-			return;
 		}
 
 		if (!IsEligible(a_actor)) {
@@ -1001,7 +981,6 @@ namespace EEA
 
 		queue_.clear();
 		queued_.clear();
-		forced_.clear();
 		logger::info("[EEA] 已还原 {} 个单位。", n);
 	}
 
@@ -1018,17 +997,14 @@ namespace EEA
 		}
 	}
 
-	void Manager::RefreshAll(bool a_force)
+	void Manager::RefreshAll(bool a_notify)
 	{
 		queue_.clear();
 		queued_.clear();
 
-		// 重算会重新给出 forced_ 标记；先清掉旧的，避免上一轮的残留影响这一轮。
-		forced_.clear();
-
 		// 先弹「正在更新敌人属性」，队列跑空时 ProcessSome() 弹「敌人属性已更新」。
 		// 这两句就是原版 $EEAStartUpdate / $EEAFinishUpdate 的对应物。
-		if (a_force) {
+		if (a_notify) {
 			const auto now = std::chrono::steady_clock::now();
 			if (now - lastNotifyStart_ > std::chrono::milliseconds(500)) {
 				lastNotifyStart_ = now;
@@ -1037,8 +1013,8 @@ namespace EEA
 			notifyOnDrain_ = true;
 		}
 
-		QueueAllLoaded(a_force);
-		logger::info("[EEA] 已请求全量刷新（{}）。", a_force ? "强制" : "按触发模式");
+		QueueAllLoaded();
+		logger::info("[EEA] 已请求全量刷新：清空队列，重新处理全部已加载单位。");
 
 		// 极端情况：一个可入队单位都没有 → 队列永远跑不到「空事件」，
 		// 这里补一次，免得「正在更新」弹出来之后没有下文。

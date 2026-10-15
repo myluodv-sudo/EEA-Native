@@ -197,7 +197,6 @@ namespace EEA
 
 		if (a_section == "Perf") {
 			if (a_key == "iProcessPerTick") { s.processPerTick = std::clamp(ToInt(a_value), 1, 64); }
-			else if (a_key == "iTriggerMode") { s.triggerMode = std::clamp(ToInt(a_value), 0, 2); }
 			else if (a_key == "bNotifyOnRefresh") { s.notifyOnRefresh = ToBool(a_value); }
 			else if (a_key == "bPreserveCurrentRatio") { s.preserveCurrentRatio = ToBool(a_value); }
 			else if (a_key == "bUseTemporaryModifier") { s.useTemporaryModifier = ToBool(a_value); }
@@ -364,13 +363,7 @@ namespace EEA
 		out << "\n[Perf]\n";
 		out << "; 每帧最多处理几个单位（跨帧摊平，防止进地牢瞬间卡顿）\n";
 		out << "iProcessPerTick=" << s.processPerTick << "\n";
-		out << "\n; ---- 触发模式 ----\n";
-		out << "; 0 = Load   单位一加载就强化（原版行为）\n";
-		out << "; 1 = Combat 只在进入战斗时强化。这样 minLevel 可以放到 1 也不会被\n";
-		out << ";           满地小动物撑爆队列（作者当年拒绝「1 级生效」的原因就是这个）\n";
-		out << "; 2 = Both   两者都触发\n";
-		out << "; 注意：本开关只影响「自动触发」；在菜单里改任何设置都会强制重算一遍已加载单位。\n";
-		out << "iTriggerMode=" << s.triggerMode << "\n";
+		out << "; 单位一加载就立即强化（与原版 Papyrus 行为一致）。\n";
 		out << "\n; 改设置时是否在屏幕上弹提示（原版行为：正在更新敌人属性 / 敌人属性已更新）\n";
 		out << "bNotifyOnRefresh=" << B(s.notifyOnRefresh) << "\n";
 		out << "\n; 改上限时是否保持当前值百分比（仅生命/法力/体力）。\n";

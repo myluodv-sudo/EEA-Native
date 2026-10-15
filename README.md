@@ -21,7 +21,7 @@ Papyrus 逻辑整体换成 SKSE 原生插件。配置项与原版 MCM 一一对�
 | 离开区域 / 进门 / **改设置** → 敌人**回满血** | `EnhanceEnemyAV.psc::ResetAV()` 第 37–39 行：**先** `RestoreAV(AVstring, GetAVMax(AVstring))` 把当前值拉满，**再** `modav(GetBaseAV - GetAVMax)` 把上限降回基准 —— 净结果必然是满血。而 `ResetAV` 被 `OnEffectFinish`（L159）和 `OnUpdate`（L99）**无条件**调用，所以只要法术效果一起一落就回一次血。改设置时 `UpdateEnemyAV.psc` 会依次翻转 6 个开关（每个还夹一次 `Utility.Wait(1.0)`），等于整条法术反复起落 6 次 → 满血 6 次。这就是「脱战/进出门/改设置都会满血」的确切机制 | 全部改为**按净差写上限**，且**幂等**（数值没变就一行都不碰引擎）；从不调用 `RestoreAV`，全程不出现「最大值」这个概念。同时对生命/法力/体力**保持当前值百分比** —— 于是残血敌人强化后仍按原比例，改设置时血量占比也不动 |
 | Sigdis 传送后满血 | 同上，传送 = 效果重放 | 同上，从机制上不存在 |
 | 进地牢瞬间脚本爆发 | 每个被强化单位各复制一份 `ActiveMagicEffect` 实例；`UpdateEnemyAV.psc` 里 6 段 `Utility.Wait(1.0)` 串行占 VM | **零 Papyrus**；队列制 + 每帧最多处理 `iProcessPerTick` 个单位（跨帧摊平） |
-| **1 级生效会拖垮游戏**（作者原话：1 级会让各种小动物也生效，脚本数量太多，不建议） | Papyrus 里「生效范围」只能靠 magic effect 条件门控，一旦放开就是**每个单位一份脚本实例**常驻 | 用 `TESCombatEvent` 做**事件驱动**：`iTriggerMode=1` 时只有真正进入战斗的单位才会被处理。于是 `minLevel` 可以放心调到 1 |
+| **1 级生效会拖垮游戏**（作者原话：1 级会让各种小动物也生效，脚本数量太多，不建议） | Papyrus 里「生效范围」只能靠 magic effect 条件门控，一旦放开就是**每个单位一份脚本实例**常驻 | 插件里没有脚本实例：每个单位只是队列里的一个 FormID。数量上升只影响**首次入队时的消化速度**（每帧 `iProcessPerTick` 个，跨帧摊平），所以 `minLevel` 可以放心调到 1 |
 | MCM 菜单偶尔不显示 | SkyUI MCM 注册时序竞争 | ImGui 页面由 DLL 注册，无此问题 |
 | 10 级才生效改不了 | `GetLevel > 9` 烘焙在 ESP 的 MGEF 条件里 | 变成可调滑块 `minLevel`（1–80） |
 | 随从伤害被 NFF 锁死 | 法术发给所有人，Perk 改的是全局性 AV | 由一个 DLL 统一判定与施加，可选 `bExcludeFollowers` / `bExcludeSummons` |
@@ -55,11 +55,11 @@ Papyrus 逻辑整体换成 SKSE 原生插件。配置项与原版 MCM 一一对�
 | 每个被强化单位的**常驻**开销 | 一份完整 `ActiveMagicEffect` 脚本实例 | 0（只是一条记录，没有实例） |
 | 数量上升时 | 实例数线性增长，VM 队列被占满 | 只影响首次入队时的队列消化速度 |
 | 数值没变化时 | 每次刷新仍**无条件** `ModAV` + `SetScale` | **一行都不执行**（幂等） |
-| 何时处理 | 只能靠条件门控，条件一满足就全上 | `iTriggerMode=1` → 只在进入战斗那一刻处理 |
+| 何时处理 | 只能靠条件门控，条件一满足就全上 | 单位加载 / 进入战斗 / 手动刷新，三条路径汇进同一个队列 |
 | 大批单位同时出现 | 瞬间爆发，掉帧 10–20 秒 | 每帧只处理 `iProcessPerTick` 个，平滑消化 |
 | 数值如何回滚 | `RestoreAV(…, GetAVMax)` → 顺带把血拉满 | 净差写回，且保持当前值百分比 |
 
-所以 `minLevel` 在插件版里可以一直调到 **1**，把「省性能」这件事交给触发模式去管。
+所以 `minLevel` 在插件版里可以一直调到 **1**，把「省性能」这件事交给**每帧预算**去管。
 
 **保留的机制**：法术强度仍然走原作者那条路 —— Perk `EEA_EnhanceMGCPerk` 读 `LockpickingPowerModifier`(AV #143) 作为法术幅度倍率。同时额外提供一条**纯 DLL 路线**（直接加成五大法术学派 `*PowerModifier`），见下文 `[Magic] sMode`。
 
@@ -124,7 +124,7 @@ native/
 │   ├─ PCH.h
 │   ├─ Config.h / .cpp              INI 读写，键名与原版 settings.ini 一致
 │   ├─ EnhancementManager.h / .cpp  判定 / 计算 / 施加 / 精确回滚 / 跨帧摊平 / co-save
-│   ├─ Menu.h / .cpp                SKSE 菜单框架页面（6 个 Tab + 实时预览）
+│   ├─ Menu.h / .cpp                SKSE 菜单框架页面（7 个 Tab + 实时预览）
 │   └─ main.cpp                     插件入口、事件与序列化注册
 ├─ third_party/
 │   └─ SKSEMenuFramework.h      单头文件接入菜单框架（不需要 vcpkg 里的 imgui）
@@ -195,11 +195,11 @@ cmake --build build --preset release
 ### 游戏内菜单
 
 按 **DELETE** 打开「模组控制面板」→ 左侧 `EEA_Native` → `敌人属性增强`。
-共 **7 个 Tab**、**31 项可调参数** + 4 个操作按钮，菜单文案全中文。改动**即时生效**（滑条一松就落盘并重算）。
+共 **7 个 Tab**、**52 项可调参数**（另有每页 2 个仅用于预览的滑条）+ 4 个操作按钮，菜单文案全中文。
+改动**即时生效**（滑条一松就落盘并重算）。
 
-> **关于「即时生效」**：在菜单里改任何设置都属于「显式要求重算」，
-> 插件会把**已加载单位全部**重算一遍（无视 `iTriggerMode`），并在屏幕上弹提示。
-> `iTriggerMode` 只约束**自动触发**（单位加载 / 进入战斗），不影响菜单改动。
+> **关于「即时生效」**：在菜单里改任何设置都会把**已加载单位全部**重算一遍，并在屏幕上弹提示。
+> 单位一加载也会立刻强化一次 —— 也就是说**不进入战斗也加成**，与原版 Papyrus 行为一致。
 
 #### 屏幕提示（与原版一致）
 
@@ -214,7 +214,7 @@ cmake --build build --preset release
 用的是同一个引擎通知接口（`RE::DebugNotification`），所以显示位置、样式与原版一模一样。
 不需要的话把 `[Perf] bNotifyOnRefresh` 改成 `0`，或取消勾选菜单里的「改设置时弹提示」。
 
-#### Tab ①　总开关（19 项）
+#### Tab ①　总开关（18 项）
 
 | 配置项 | 取值范围 | INI 键 |
 |---|---|---|
@@ -248,15 +248,14 @@ cmake --build build --preset release
 每页底部有**实时预览**：按上面两个预览等级直接算出「普通敌人额外加成 +x%」与
 「Boss 额外加成 +x%」；法术强度页还会显示「法术伤害 / 增益幅度 ×n」。
 
-#### Tab ⑦　关于 / 性能（5 项 + 状态 + 按钮）
+#### Tab ⑦　关于 / 性能（4 项 + 状态 + 按钮）
 
 | 配置项 | 取值范围 | INI 键 |
 |---|---|---|
+| 改设置时弹提示 | 开 / 关 | `bNotifyOnRefresh` |
 | 每帧处理单位数 | 1 – 64 | `iProcessPerTick` |
 | 详细日志 | 开 / 关 | `bVerboseLog` |
-| 仅进入战斗时才强化 | 开 / 关 | `iTriggerMode`（只给 0 / 1 两档） |
 | 保持当前血量百分比 | 开 / 关 | `bPreserveCurrentRatio` |
-| 改设置时弹提示 | 开 / 关 | `bNotifyOnRefresh` |
 
 **只读状态**：框架版本、当前已强化单位数、待处理队列长度、法术强度增益载体（Perk）是否接入、
 Boss 判定②（记录名 EditorID）是否可用、法术强度实现方式，以及**上次判定诊断的完整结果**
@@ -264,7 +263,7 @@ Boss 判定②（记录名 EditorID）是否可用、法术强度实现方式，
 
 **四个按钮**：`立即刷新全部` / `还原所有单位` / `保存到 INI` / `运行判定诊断`。
 
-> `立即刷新全部` 会**无视**「仅进入战斗时才强化」，把已加载单位全部重算 —— 和改设置是同一套逻辑。
+> `立即刷新全部` 把已加载单位全部重算一遍 —— 和菜单里改设置是同一套逻辑（同样会弹提示）。
 > `还原所有单位` 在卸载插件前必须点一次（默认用 `kPermanent` 桶，数值随存档保存）。
 > `运行判定诊断` 把第一节那种统计写进日志，用来定位「为什么不生效」。
 
@@ -273,7 +272,6 @@ Boss 判定②（记录名 EditorID）是否可用、法术强度实现方式，
 | INI 键 | 为什么没进菜单 |
 |---|---|
 | `sMode` | 法术强度实现方式（Perk / PowerMod / Both），牵涉"要不要保留 ESP"，属装前决策 |
-| `iTriggerMode=2` | 菜单只给最常用的两档（0 加载 / 1 仅战斗） |
 | `bUseTemporaryModifier` | **已失效**：引擎未暴露带桶的 `ModActorValue`，属性上限恒走永久修正。保留键名仅为 INI 兼容 |
 | `iBossMinAggression` / `iBossMinConfidence` | Boss 判定③的阈值（该判据默认关闭） |
 | `sLocRefTypeBoss` / `sBossEdidPatterns` | Boss 判定的匹配文字 |
@@ -308,13 +306,14 @@ Boss 判定②（记录名 EditorID）是否可用、法术强度实现方式，
 | Filter | `bExcludeDragons` | 龙类是否排除在属性强化外（原版行为） | 1 |
 | Magic | `sMode` | `Perk` / `PowerMod` / `Both` | Perk |
 | Perf | `iProcessPerTick` | 每帧处理单位数 | 6 |
-| Perf | `iTriggerMode` | `0`=加载即强化 / `1`=仅战斗触发 / `2`=两者 | 0 |
 | Perf | `bPreserveCurrentRatio` | 改上限时保持当前血量百分比（不回血） | 1 |
 | Perf | `bNotifyOnRefresh` | 改设置时弹屏幕提示（原版 `$EEAStartUpdate` / `$EEAFinishUpdate`） | 1 |
 | Perf | `bUseTemporaryModifier` | **已失效**，恒为 `kPermanent`（见下方「存档残留」说明） | 0 |
 
-> `iTriggerMode=1` 与 `bPreserveCurrentRatio=1` 是最值得动的两个开关：
-> 前者让你可以放心把 `minLevel` 设成 1，后者决定「改设置时血量会不会跳」。
+> `iProcessPerTick` 与 `bPreserveCurrentRatio` 是最值得动的两个开关：
+> 前者决定进地牢时队列的消化速度，后者决定「改设置时血量会不会跳」。
+> 已**没有** `iTriggerMode` —— 它被彻底移除了，原因见 `MECHANICS.md` 第 12 节
+> （原版本来就是「不进入战斗也加成」）。
 
 ### 定义层过滤：为什么「按 NPC 类型排除」比「按当前状态排除」可靠
 
@@ -431,8 +430,9 @@ Boss 设定就等于不存在。
    （这正是 Native EditorID Fix 这类插件存在的理由）。三条路选一条：
    装一个 Native EditorID Fix（推荐，装了这条判据立刻可用）；把 `bBossUseEditorID` 改成 0，
    只靠第 [1] 级；或把 `bBossUseAIData` 改成 1 走 AI 数据（实测会命中 42%，慎用）。
-4. **`iTriggerMode=1`（仅战斗触发）** —— 打开后进一个新地牢，日志里**不应**出现批量「首次强化」，
-   只有拔刀开打（或被打）的单位才会出现。确认后就可以把 `minLevel` 改成 1。
+4. **`minLevel=1` 压测（可选）** —— 把 `minLevel` 临时改成 1 进一个新地牢，
+   日志里应出现一批「首次强化」。这是原版 Papyrus 不敢做的事（脚本实例会爆），
+   插件靠「每帧预算 + 跨帧摊平」撑住。测完记得改回去。
 
 另外这几处 API 按 CommonLibSSE-NG `ng` 分支的头文件写，首次编译若有报错，把报错贴回来即可快速修：
 `RE::TESRace::HasKeyword`、`Actor::IsPlayerTeammate / IsSummoned`、`Actor::AddPerk` 的 rank 参数、
@@ -455,7 +455,7 @@ Boss 设定就等于不存在。
 | `a_actor->GetFormType() != RE::FormType::NPC` | **每一个单位都被拒**。场景里的单位是 ACHR，返回 `FormType::ActorCharacter`（0x3E）；`FormType::NPC`（0x2B）是 NPC_ **记录**（基对象）的类型。判定依据在 CommonLibSSE-NG `RE/F/FormTypes.h` 的枚举注释里逐行列着 |
 | `CMAKE_MSVC_RUNTIME_LIBRARY` 写死 `/MT` | 与 vcpkg 编出的 CommonLibSSE-NG（`/MD`）冲突，链接期 `LNK2038` + 一片 `LNK2005`。改为按 `VCPKG_TARGET_TRIPLET` 推导 |
 | 用默认三元组 `x64-windows` | 产物会依赖 `fmt.dll` / `spdlog.dll`，MOD 包里没有 → 游戏加载插件失败。必须用 `x64-windows-static` |
-| 菜单改动走 `Queue(actor, force=false)` | `iTriggerMode=1` 时菜单改设置变成**空操作**。显式刷新一律 `force=true` |
+| 自动路径被「触发模式」门控 | 早期版本有 `iTriggerMode=1`（仅战斗触发），结果单位加载时根本不入队，用户在菜单里改设置**看不到任何变化**。该开关现已彻底移除：加载、战斗、手动刷新走同一条路径 |
 
 > 预期第一次 `push` 会有若干编译错误 —— 这是 SKSE 插件的常态，把 Actions 的日志贴出来就行，不需要你自己改。
 

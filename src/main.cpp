@@ -68,7 +68,7 @@ namespace
 				return RE::BSEventNotifyControl::kContinue;
 			}
 			if (auto* actor = a_event->actor->As<RE::Actor>()) {
-				EEA::Manager::Get().Queue(actor, /*a_force=*/true);
+				EEA::Manager::Get().Queue(actor);
 			}
 			return RE::BSEventNotifyControl::kContinue;
 		}
@@ -160,14 +160,8 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 		logger::error("[EEA] 取不到 ScriptEventSourceHolder。");
 	}
 
-	{
-		const auto mode = EEA::Config::Get().Data().triggerMode;
-		const char* desc = (mode == 1) ? "仅战斗触发（Combat）"
-		                 : (mode == 2) ? "加载 + 战斗触发（Both）"
-		                               : "加载即强化（Load，原版行为）";
-		logger::info("[EEA] 触发模式 = {}，最低生效等级 = {}，每帧处理上限 = {}。",
-			desc, EEA::Config::Get().Data().minLevel, EEA::Config::Get().Data().processPerTick);
-	}
+	logger::info("[EEA] 最低生效等级 = {}，每帧处理上限 = {}。",
+		EEA::Config::Get().Data().minLevel, EEA::Config::Get().Data().processPerTick);
 
 	logger::info("[EEA] 初始化完成。");
 	return true;

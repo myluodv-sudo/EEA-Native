@@ -56,45 +56,44 @@ kDataLoaded（所有插件加载完，此时才能安全查表单）
 **刻意不 hook 主循环。** 只用官方事件源，不碰 `REL::ID` —— 这意味着不会有
 「游戏一升级插件就崩」的版本漂移问题，只依赖 Address Library。
 
-### 2.2 运行阶段：两条触发路径
+### 2.2 运行阶段：三条触发路径
 
 **路径 A —— 对象加载**（`TESObjectLoadedEvent`，只取 `loaded == true`）
 
 ```
 OnObjectLoaded(formID)
-  ├─ 检查玩家等级是否变化 → 变了就 RefreshAll()（玩家升级后所有单位该重算）
-  ├─ if triggerMode == 1（Combat 模式）→ 直接 return，不入队
+  ├─ 检查玩家等级是否变化 → 变了就 RefreshAll(a_notify=false)（玩家升级后所有单位该重算）
   └─ LookupByID → As<Actor>() → Queue(actor)
 ```
 
 **路径 B —— 进入战斗**（`TESCombatEvent`，只取 `newState == kCombat`）
 
 ```
-Queue(actor, /*a_force=*/true)
+Queue(actor)
 ```
 
-**路径 C —— 显式要求重算**（菜单改设置 / 点「立即刷新全部」/ 玩家升级）
+**路径 C —— 显式要求重算**（菜单改设置 / 点「立即刷新全部」）
 
 ```
-RefreshAll(/*a_force=*/true)
-  ├─ 清空队列与 forced_
+RefreshAll(a_notify = true)
+  ├─ 清空队列
   ├─ 弹「正在更新敌人属性」                （bNotifyOnRefresh=1 时）
-  ├─ QueueAllLoaded(a_force=true)          → 每个单位 Queue(actor, true)
+  ├─ QueueAllLoaded()                      → 每个已加载单位 Queue(actor)
   └─ 队列跑空时 ProcessSome() 弹「敌人属性已更新」
 ```
 
-`a_force` 在 `ApplyTo()` 里决定要不要越过「仅战斗触发」这道门：
+三条路径**汇进同一个队列**，中间没有任何「触发模式」门控。
+早期版本有一个 `iTriggerMode`（0=加载即强化 / 1=仅进入战斗时强化），**已彻底移除**，
+原因见第 12 节末尾：原版本来就是「不进入战斗也加成」，那个开关既不符合原版行为，
+又会让自动路径被门控，产生「菜单能改但看不到变化」的错觉。
 
-```cpp
-if (s.triggerMode == 1 && !a_forced && applied_.find(fid) == applied_.end()) {
-    return;   // Combat 模式下，全新单位留到它进入战斗那一刻
-}
-```
+是否真的写数值，只由两件事决定：
 
-所以 **A 路径（自动）受 `iTriggerMode` 约束，C 路径（人工）一律 `force=true`**。
-这条区别是必须的：用户在菜单里改了数值，期待的是立刻看到变化，而不是「等我下次打起来再说」。
-早期版本让菜单也走 `force=false`，结果 `iTriggerMode=1` 时改设置对全部已加载单位都是空操作 ——
-表现就是「菜单能改但完全不生效」。
+1. `IsEligible()` —— 这个单位该不该被强化（见 7.7 判定链）
+2. 幂等判定 —— 该属性的数值和上次比有没有变（没变就一行都不碰引擎）
+
+所以「加载即强化」不会带来额外开销：**第二次遇到同一个单位时，只要数值没变，
+整个 `ApplyTo` 就是一次 map 查找 + 若干比较**。
 
 **屏幕提示**走 `RE::DebugNotification`（声明在 `RE/M/Misc.h`，地址库 ID `52050`），
 也就是原版 Papyrus `Debug.Notification` 用的同一个引擎接口，所以显示位置与原版一致。
@@ -107,7 +106,6 @@ if (s.triggerMode == 1 && !a_forced && applied_.find(fid) == applied_.end()) {
 ```
 queue_    std::deque<FormID>        待处理顺序表
 queued_   std::unordered_set<FormID> 去重（避免同一个单位被反复入队）
-forced_   std::unordered_set<FormID> 「这次是战斗驱动」的标记
 ```
 
 `ScheduleTick()` 通过 SKSE 的 `TaskInterface` 把工作挂到**下一帧**，一次只处理
@@ -817,13 +815,13 @@ constexpr RE::ActorValue kSchoolPowerMod[5] = {
 
 `Menu::Register()` —— 框架不在时自动跳过，**核心功能完全不受影响**（只少一个配置界面）。
 
-默认为 **DELETE** 键打开模组控制面板，共 6 个 Tab：
+默认为 **DELETE** 键打开模组控制面板，共 7 个 Tab：
 
 | Tab | 内容 |
 |---|---|
-| 总开关 | `master`、`minLevel`、`bossEnabled`、`bossScale`、`affectPlayer` |
-| 生命 / 法力 / 体力 / 攻击力 / 法术强度 | 每页：开关、基础百分比、叠加玩家等级、叠加敌人等级、额外倍率、Boss 倍率 + **实时预览** |
-| 关于/性能 | 运行状态 / 操作 / 性能 / 触发模式 / 血量处理 / 定义层过滤器 |
+| 总开关 | `master`、`minLevel`、`bossEnabled`、`bossScale`、`affectPlayer`、Boss 判定 ①–③、随从/召唤/龙排除、6 个定义层过滤器 |
+| 生命 / 法力 / 体力 / 攻击力 / 法术强度（5 页） | 每页：开关、基础百分比、叠加玩家等级、叠加敌人等级、额外倍率、Boss 倍率 + **实时预览** |
+| 关于/性能 | 运行状态 / 操作 / 屏幕提示 / 性能 / 血量处理 |
 
 **实时预览**是每页最有用的东西 —— 直接按当前设置和等级算出实际加成百分比，
 不用改完再进游戏试：
@@ -855,21 +853,21 @@ INI 在游戏外手改也可以，键名与原版 MCM 的 `settings.ini` 完全�
 | 调度 | 每帧预算 + 跨帧摊平（`iProcessPerTick=6`）| 进地牢不再瞬间爆发 |
 | 稳态 | 幂等短路 | 数值没变完全不碰引擎，稳态开销 ≈ 一次 map 查找 |
 
-### `iTriggerMode` 的三个取值
+### 为什么没有「触发模式」开关（`iTriggerMode` 已移除）
 
-| 值 | 行为 | 适用 |
-|---|---|---|
-| `0` Load | 单位一加载就强化（原版行为） | 配合 `minLevel=10` 使用 |
-| `1` Combat | **只在进入战斗时**强化 | 可以把 `minLevel` 调到 **1** |
-| `2` Both | 加载与战斗都触发 | 折中 |
+早期版本提供过一个 `iTriggerMode`（0=加载即强化 / 1=仅进入战斗时强化 / 2=两者），**现已彻底移除**。
 
-**`iTriggerMode=1` 是 Papyrus 时代做不到、插件才做的事。**
+理由按重要性排序：
 
-作者在评论区说过：把 `minLevel` 设成 1 会让小动物（兔子、狐狸、鹿）也生效，
-**脚本实例太多，不建议**。那是 Papyrus 的代价模型 —— 每个生效单位都要占一个 VM 实例。
-
-插件的代价模型完全不同：事件驱动（只有真正打起来的单位才进队列）+ 每帧预算（不管多少单位，
-每帧只花固定的那点时间）。所以现在 `minLevel=1` 是可以放心开的。
+1. **它不是原版行为。** 原版主法术 `EEA_EnhanceAttribute` 的 SPIT 是 `Ability` + `Constant Effect`
+   （与 Skyrim.esm 里 250 条 Ability 同型，二进制实解核对过），靠 SkyPatcher `spellsToAdd`
+   常驻挂在 NPC 身上 —— NPC 一加载就永久生效，与战斗状态无关。23 条 CTDA 条件里也没有任何
+   战斗状态判据（逐条解析见 README 第一节）。
+2. **它制造了「菜单能改但看不到变化」。** 自动路径被它门控后，`iTriggerMode=1` 时新单位根本不入队，
+   用户改完设置看不到任何反馈 —— 这正是当时的真实故障现象。
+3. **它的收益是假的。** 当年不敢把 `minLevel` 设成 1，是因为 Papyrus 每个生效单位都要占一个 VM 实例。
+   插件的代价模型完全不同（见上面那张表），所以现在 `minLevel=1` 可以放心开 ——
+   **「省性能」交给每帧预算去管，而不是靠缩小生效范围**。
 
 ---
 

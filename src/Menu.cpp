@@ -147,9 +147,9 @@ namespace EEA::Menu
 
 			ImGuiMCP::SeparatorText("操作");
 			if (ImGuiMCP::Button("立即刷新全部##refresh")) {
-				// 强制：无视「仅进入战斗时才强化」，把已加载单位全部重算一遍，
+				// 清空队列后把已加载单位全部重算一遍，
 				// 并在屏幕上弹「正在更新敌人属性 / 敌人属性已更新」（可关）。
-				mgr.RefreshAll(/*a_force=*/true);
+				mgr.RefreshAll();
 			}
 			ImGuiMCP::SameLine();
 			if (ImGuiMCP::Button("还原所有单位##revert")) {
@@ -195,19 +195,6 @@ namespace EEA::Menu
 			}
 			if (ImGuiMCP::Checkbox("详细日志##verbose", &a_s.verboseLog)) {
 				Config::Get().MarkDirty();
-			}
-
-			ImGuiMCP::SeparatorText("触发模式");
-			{
-				// triggerMode == 2（Both）只在 INI 里设置，菜单里给出最常用的两档
-				bool combatOnly = (a_s.triggerMode == 1);
-				if (ImGuiMCP::Checkbox("仅进入战斗时才强化##combatonly", &combatOnly)) {
-					a_s.triggerMode = combatOnly ? 1 : 0;
-					Config::Get().MarkDirty();
-				}
-				ImGuiMCP::Text("勾选后可以把最低等级一路调到 1 —— 只有真打起来的单位才会被处理，");
-				ImGuiMCP::Text("不会因为满地小动物而让队列堆积（原版作者当年就是因此不建议 1 级生效）。");
-				ImGuiMCP::TextUnformatted("注意：本开关只管「自动触发」。在这里改任何设置都会立刻重算全部单位。");
 			}
 
 			ImGuiMCP::SeparatorText("血量处理");

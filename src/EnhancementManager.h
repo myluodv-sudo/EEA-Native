@@ -27,10 +27,10 @@ namespace EEA
 		void SerializeLoad(SKSE::SerializationInterface* a_intfc);
 
 		// ---- 入队 ----
-		// a_force = true 表示「这次是显式要求」：Combat 模式（iTriggerMode=1）下只有带这个标记的
-		// 才处理。战斗事件、菜单改设置、手动刷新走的都是这条路。
-		void Queue(RE::Actor* a_actor, bool a_force = false);
-		void QueueAllLoaded(bool a_force = false);
+		// 单位一旦入队就会被处理，没有「按触发模式过滤」这一步 ——
+		// 是否真的写数值由 IsEligible()（该不该强化）与幂等判定（数值变没变）决定。
+		void Queue(RE::Actor* a_actor);
+		void QueueAllLoaded();
 
 		// 对象加载事件的统一入口（顺带检测玩家升级 → 全量刷新）
 		void OnObjectLoaded(RE::FormID a_formID);
@@ -39,11 +39,10 @@ namespace EEA
 		void RevertAll();
 		void RevertOne(RE::Actor* a_actor);
 
-		// 全量重算。
-		// a_force = true（默认）会把「已加载单位」全部按显式请求处理 —— 也就是**无视**
-		// iTriggerMode=1 的「仅战斗触发」。这是必须的：用户在菜单里改了数字，期待的是
-		// 立刻看到变化，而不是「等我下次打起来再说」。
-		void RefreshAll(bool a_force = true);
+		// 全量重算：清空队列 → 已加载单位全部重新入队 → 逐个按当前设置重算。
+		// a_notify = true（默认）会弹「正在更新敌人属性 / 敌人属性已更新」，
+		// 对应原版 MCM 的行为；玩家升级触发的刷新传 false，免得每次升级都弹一遍。
+		void RefreshAll(bool a_notify = true);
 
 		// 把一次判定诊断（每个过滤器各拒了多少个）写进日志，用来定位「为什么不生效」。
 		void RunFilterCensus();
@@ -95,7 +94,7 @@ namespace EEA
 
 		void  ScheduleTick();
 		void  ProcessSome();
-		void  ApplyTo(RE::Actor* a_actor, bool a_forced);
+		void  ApplyTo(RE::Actor* a_actor);
 		void  RevertWith(RE::Actor* a_actor, const Applied& a_entry);
 		void  RevertEntry(RE::Actor* a_actor, Applied& a_entry);
 
@@ -140,7 +139,6 @@ namespace EEA
 
 		std::deque<RE::FormID>          queue_;
 		std::unordered_set<RE::FormID>  queued_;
-		std::unordered_set<RE::FormID>  forced_;   // 战斗事件驱动的入队标记
 		std::atomic<bool>               tickScheduled_{ false };
 
 		// ---- Boss / 龙 判定所需的表单 ----
