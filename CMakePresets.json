@@ -35,6 +35,10 @@
       "name": "release",
       "configurePreset": "default",
       "configuration": "Release"
+    },
+    {
+      "name": "ninja-release",
+      "configurePreset": "ninja"
     }
   ]
 }

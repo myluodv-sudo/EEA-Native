@@ -17,6 +17,26 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      # 只是打印环境信息，方便排查；失败不影响后续步骤
+      - name: 诊断 —— 列出 runner 上的 Visual Studio / CMake / Ninja
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Write-Host "===== CMake ====="
+          cmake --version
+          Write-Host "===== Ninja ====="
+          ninja --version
+          Write-Host "===== vswhere 能看到的 Visual Studio 实例 ====="
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            & $vswhere -all -products * -format json |
+              ConvertFrom-Json |
+              Select-Object displayName, installationVersion, installationPath |
+              Format-List
+          } else {
+            Write-Host "vswhere.exe 不存在"
+          }
+
       - name: 暴露 GitHub Actions 缓存变量（给 vcpkg 二进制缓存用）
         uses: actions/github-script@v7
         with:
@@ -31,12 +51,21 @@ jobs:
           vcpkgGitCommitId: 9e593bb18ea69cc5095e012465dcd675a822ed0d
           vcpkgJsonGlob: 'vcpkg.json'
 
+      # 关键：不写死 generator 版本号。
+      # 2026 年的 windows-latest 上 VS 主版本已不是 17，写死 "Visual Studio 17 2022"
+      # 会让 CMake 报 "could not find any instance of Visual Studio"。
+      # 改用 Ninja + 显式注入 MSVC 环境，与 VS 版本彻底解耦。
+      - name: 启用 MSVC x64 编译环境
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: 配置并编译
         uses: lukka/run-cmake@v10
         with:
           cmakeListsTxtPath: '${{ github.workspace }}/CMakeLists.txt'
-          configurePreset: 'default'
-          buildPreset: 'release'
+          configurePreset: 'ninja'
+          buildPreset: 'ninja-release'
 
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
