@@ -16,6 +16,9 @@ jobs:
 
     env:
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite"
+      # 让体检脚本在 CI 上按 UTF-8 输出（脚本内部也做了 reconfigure，这里是双保险）
+      PYTHONIOENCODING: "utf-8"
+      PYTHONUTF8: "1"
 
     steps:
       - name: 检出代码
@@ -43,11 +46,11 @@ jobs:
           Write-Host "===== 诊断时的 VCPKG_ROOT ====="
           Write-Host "VCPKG_ROOT = $env:VCPKG_ROOT"
 
-      - name: 缓存 vcpkg 二进制包（命中后配置阶段从 ~10 分钟降到 1 分钟内）
-        uses: actions/cache@v4
+      - name: 恢复 vcpkg 二进制缓存（命中后配置阶段从 ~12 分钟降到 1 分钟内）
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/vcpkg-bincache
-          # 三元组与 vcpkg 清单变了就重新开一份缓存，避免读到不匹配的二进制
+          # 三元组与 vcpkg 清单变了就换一份缓存，避免读到不匹配的二进制
           key: vcpkg-bincache-${{ runner.os }}-x64-windows-static-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
           restore-keys: |
             vcpkg-bincache-${{ runner.os }}-x64-windows-static-
@@ -106,3 +109,14 @@ jobs:
             dist/SKSE/Plugins/EEA_Native.dll
             dist/SKSE/Plugins/EEA_Native.ini
             dist/**/*.pdb
+
+      # 故意不用 actions/cache 的自动收尾：它的写盘只在「整个 job 成功」时才发生，
+      # 只要后面任何一步失败（例如体检没过），前面 12 分钟的 vcpkg 编译成果就全扔了，
+      # 下一轮还得从头再编。这里显式无条件保存，失败也留档。
+      - name: 保存 vcpkg 二进制缓存（失败也存）
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-bincache
+          key: vcpkg-bincache-${{ runner.os }}-x64-windows-static-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}

@@ -23,6 +23,15 @@ import struct
 import sys
 from pathlib import Path
 
+# Windows 上重定向输出时 Python 默认走 cp1252/locale 编码，本脚本要打中文，
+# 不显式改成 UTF-8 会直接 UnicodeEncodeError（CI 上踩过一次）。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 MACHINES = {
     0x014C: "x86 (32 位)",
     0x8664: "x64 (64 位)",
