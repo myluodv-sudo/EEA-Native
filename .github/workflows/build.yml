@@ -48,9 +48,9 @@ jobs:
         with:
           path: ${{ github.workspace }}/vcpkg-bincache
           # 三元组与 vcpkg 清单变了就重新开一份缓存，避免读到不匹配的二进制
-          key: vcpkg-bincache-${{ runner.os }}-x64-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          key: vcpkg-bincache-${{ runner.os }}-x64-windows-static-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
           restore-keys: |
-            vcpkg-bincache-${{ runner.os }}-x64-windows-
+            vcpkg-bincache-${{ runner.os }}-x64-windows-static-
 
       # ⚠ 顺序很关键，不要和下面的「安装 vcpkg」调换。
       # msvc-dev-cmd 内部会调 vcvarsall，而 VS 2026 的 vcvarsall 会把 VCPKG_ROOT
@@ -81,6 +81,21 @@ jobs:
           cmakeListsTxtPath: '${{ github.workspace }}/CMakeLists.txt'
           configurePreset: 'ninja'
           buildPreset: 'ninja-release'
+
+      - name: 准备 Python（体检脚本用，纯标准库）
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 体检编译产物（导出符号 / 运行库口径 / 意外依赖）
+        run: |
+          python tools/pe_info.py --strict dist/SKSE/Plugins/EEA_Native.dll
+        # --strict 会在下面任一条不满足时让本步骤失败，避免把「装进游戏加载不了」
+        # 的 DLL 当成成功产物上传：
+        #   · 缺 SKSEPlugin_Version / SKSEPlugin_Load
+        #   · 链了调试版 CRT
+        #   · 依赖了 fmt.dll / spdlog.dll 之类需要随包分发的第三方 DLL
+        #     （vcpkg 动态三元组 x64-windows 会这样，必须用 x64-windows-static）
 
       - name: 上传编译产物
         uses: actions/upload-artifact@v4

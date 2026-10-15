@@ -5,10 +5,10 @@ Papyrus 逻辑整体换成 SKSE 原生插件。配置项与原版 MCM 一一对�
 
 - 目标运行时：**Skyrim SE 1.5.97**（SKSE 2.0.20）
 - 依赖：SKSE + Address Library（你已装）
-- 依赖：**Microsoft Visual C++ 2015–2022 x64 运行库**（MSVCP140.dll）。
-  DLL 按 vcpkg 默认三元组 `x64-windows` 编译，用**动态 CRT（/MD）** —— 因为
-  vcpkg 编出来的 CommonLibSSE-NG 就是 /MD，两者必须一致，否则链接期 LNK2038。
-  绝大多数 Skyrim 整合包装机时已经带上；若游戏报 DLL 加载失败，装一次运行库即可。
+- **不需要**额外运行库：DLL 用 vcpkg `x64-windows-static` 三元组编译，
+  链接的是**静态 CRT（/MT）**，单文件自包含，装机无需 VC++ Redistributable。
+  （为什么必须静态：vcpkg 默认三元组 `x64-windows` 会把 `fmt.dll` / `spdlog.dll`
+  作为外部依赖带进来，而 MOD 包里没有这两个文件，进游戏会直接加载失败。）
 - 可选：SKSE Menu Framework（你整合包里已有，缺失时菜单自动隐藏，功能不受影响）
 
 ---

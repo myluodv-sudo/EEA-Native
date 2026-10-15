@@ -8,25 +8,25 @@
   "configurePresets": [
     {
       "name": "default",
-      "displayName": "x64-windows (vcpkg, SE 1.5.97)",
+      "displayName": "VS 2022+ (vcpkg x64-windows-static, SE 1.5.97)",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_TARGET_TRIPLET": "x64-windows"
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static"
       }
     },
     {
       "name": "ninja",
-      "displayName": "Ninja + cl (vcpkg, SE 1.5.97)",
+      "displayName": "Ninja + cl (vcpkg x64-windows-static, SE 1.5.97)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-ninja",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_TARGET_TRIPLET": "x64-windows"
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static"
       }
     }
   ],
